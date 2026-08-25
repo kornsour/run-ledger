@@ -1,0 +1,5 @@
+bin/
+*.duckdb
+*.db
+coverage.out
+.DS_Store
