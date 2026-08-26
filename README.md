@@ -121,6 +121,13 @@ implementation cannot quietly disagree about ordering or idempotency.
 The in-memory store is the only backend, so nothing survives a restart. A durable,
 queryable backend is the next piece of work — see the issue tracker.
 
+## Archive
+
+Historical and superseded documentation lives in [`archive/`](archive/). Its
+contents are past decisions, plans, or state — not the current design.
+Don't use anything under `archive/` to understand this project as it is
+today or to guide new work; use this README and the code instead.
+
 ## License
 
 MIT
