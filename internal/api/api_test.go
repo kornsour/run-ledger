@@ -17,6 +17,19 @@ func srv(t *testing.T) http.Handler {
 	return New(store.NewMemory(), nil).Handler()
 }
 
+func srvWithAuth(t *testing.T, auth Auth) http.Handler {
+	t.Helper()
+	return New(store.NewMemory(), nil, WithAuth(auth)).Handler()
+}
+
+func authed(method, path, token string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(""))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req
+}
+
 func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
@@ -214,5 +227,92 @@ func TestMetricsEndpointReportsStoreConflict(t *testing.T) {
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	if !strings.Contains(w.Body.String(), `runledger_store_errors_total{kind="conflict"} 1`) {
 		t.Fatalf("store error counter did not record the conflict; got:\n%s", w.Body.String())
+	}
+}
+
+func TestNoTokenConfiguredAllowsEverything(t *testing.T) {
+	h := srv(t) // no Auth option: the default, single-user, unauthenticated server.
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authed(http.MethodGet, "/runs", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 with no token configured, got %d: %s", w.Code, w.Body)
+	}
+
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201 with no token configured, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestTokenConfiguredRefusesMissingOrWrongOnBothVerbs(t *testing.T) {
+	h := srvWithAuth(t, Auth{WriteToken: "write-secret"})
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		token  string
+	}{
+		{"read, no token", http.MethodGet, "/runs", ""},
+		{"read, wrong token", http.MethodGet, "/runs", "nope"},
+		{"write, no token", http.MethodPost, "/runs", ""},
+		{"write, wrong token", http.MethodPost, "/runs", "nope"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, authed(c.method, c.path, c.token))
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("want 401, got %d: %s", w.Code, w.Body)
+			}
+		})
+	}
+
+	// The correct token still works on both verbs.
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authed(http.MethodGet, "/runs", "write-secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 with the correct token, got %d: %s", w.Code, w.Body)
+	}
+
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer write-secret")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201 with the correct token, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestReadTokenCannotWrite(t *testing.T) {
+	h := srvWithAuth(t, Auth{WriteToken: "write-secret", ReadToken: "read-secret"})
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, authed(http.MethodGet, "/runs", "read-secret"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("read token should be able to read, got %d: %s", w.Code, w.Body)
+	}
+
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
+	w = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer read-secret")
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a read token must not be able to write, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestHealthzUnauthenticatedEvenWithTokenConfigured(t *testing.T) {
+	h := srvWithAuth(t, Auth{WriteToken: "write-secret"})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
 	}
 }

@@ -98,16 +98,45 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/readyz` | readiness — the store answers a call |
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
 
+## Auth
+
+By default the server accepts writes from anyone who can reach it — the right
+default for a single-user local ledger, and it stays the default. Running it
+anywhere reachable by more than one party needs a token:
+
+```bash
+export RUNLEDGER_TOKEN=<write-secret>          # grants reads and writes
+export RUNLEDGER_READ_TOKEN=<read-secret>      # optional: grants reads only
+./bin/runledger
+```
+
+`--token-file` and `--read-token-file` read the same tokens from a file
+instead, for a secrets manager that mounts one. With no token configured
+either way, the server logs once, at startup, that it is running
+unauthenticated.
+
+- Tokens are compared with `crypto/subtle.ConstantTimeCompare`.
+- The read token cannot write; the write token can do both, so `rlctl` needs
+  only one credential for a normal workflow.
+- `/healthz` stays unauthenticated so a probe does not need a credential.
+- `rlctl` reads its token from `RUNLEDGER_TOKEN` only — never from a flag,
+  since a token in a flag lands in shell history and in the process table.
+
 ## Decisions worth knowing
+
+This is a summary. The full reasoning — context, consequences, and what would
+have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
 
 - **The server computes the fingerprint, never the client.** A caller that could
   assert its own fingerprint could claim two different experiments were the same
-  run.
+  run. ([ADR 0001](docs/adr/0001-server-computes-the-fingerprint.md))
 - **Unknown JSON fields are rejected.** A typo'd field name in a lineage record
   would otherwise store a run that claims to describe an experiment it does not.
+  ([ADR 0002](docs/adr/0002-unknown-json-fields-are-rejected.md))
 - **A dirty working tree without a config hash is refused.** The commit no longer
   describes the code that ran, so the config hash is the only remaining handle on
   what actually executed.
+  ([ADR 0003](docs/adr/0003-dirty-tree-without-config-hash-is-refused.md))
 - **Re-recording identical content is idempotent; different content under the
   same id is a conflict.** Silently overwriting a lineage record would make
   history unreliable.
@@ -116,7 +145,11 @@ implementation cannot quietly disagree about ordering or idempotency.
 - **Hashed fields are length-prefixed** so `("ab","c")` and `("a","bc")` cannot
   collide, and **params are sorted before hashing** because Go randomizes map
   iteration — without that, the same experiment fingerprints differently between
-  runs of the same binary.
+  runs of the same binary. **The fingerprint input — which fields, in what
+  order, with what delimiting — is a versioned contract**: changing it orphans
+  every fingerprint already recorded, and needs a version field plus a
+  documented migration, not a patch release.
+  ([ADR 0004](docs/adr/0004-fingerprint-input-is-a-versioned-contract.md))
 - **`/metrics` is hand-rolled, not built on a client library.** The project ships
   as one dependency-free binary, and a few counters and a histogram don't
   justify breaking that. `runledger_runs` is read from the store at scrape
