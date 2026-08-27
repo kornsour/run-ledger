@@ -34,3 +34,5 @@ jobs:
         run: go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
       - name: Build
         run: make build
+      - name: Build image
+        run: make image

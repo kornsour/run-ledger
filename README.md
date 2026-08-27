@@ -71,6 +71,18 @@ params.lr                 identity      3e-4                  1e-4
 metrics.loss              metric        0.42                  0.3
 ```
 
+Or bring it up in a container instead of building locally:
+
+```bash
+docker compose up
+```
+
+That builds the image from the `Dockerfile` and starts `runledger` on
+`:8080` with a persistent volume mounted for the store (currently unused --
+see [Status](#status)). Published images land on `ghcr.io/lurking-walrus/run-ledger`
+on tagged releases; `make image` builds the same image locally for the host
+platform.
+
 ## Layout
 
 ```
