@@ -96,6 +96,30 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
 | `GET` | `/healthz` | liveness |
 
+## Auth
+
+By default the server accepts writes from anyone who can reach it — the right
+default for a single-user local ledger, and it stays the default. Running it
+anywhere reachable by more than one party needs a token:
+
+```bash
+export RUNLEDGER_TOKEN=<write-secret>          # grants reads and writes
+export RUNLEDGER_READ_TOKEN=<read-secret>      # optional: grants reads only
+./bin/runledger
+```
+
+`--token-file` and `--read-token-file` read the same tokens from a file
+instead, for a secrets manager that mounts one. With no token configured
+either way, the server logs once, at startup, that it is running
+unauthenticated.
+
+- Tokens are compared with `crypto/subtle.ConstantTimeCompare`.
+- The read token cannot write; the write token can do both, so `rlctl` needs
+  only one credential for a normal workflow.
+- `/healthz` stays unauthenticated so a probe does not need a credential.
+- `rlctl` reads its token from `RUNLEDGER_TOKEN` only — never from a flag,
+  since a token in a flag lands in shell history and in the process table.
+
 ## Decisions worth knowing
 
 - **The server computes the fingerprint, never the client.** A caller that could

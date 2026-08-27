@@ -27,6 +27,9 @@ const usage = `rlctl — record and compare experiment runs
   rlctl diff   <run-a> <run-b>
 
   --server defaults to $RUNLEDGER_ADDR or http://localhost:8080
+  RUNLEDGER_TOKEN, if set, is sent as a bearer token on every request. It is
+  never read from a flag: a token in a flag lands in shell history and in the
+  process table.
 `
 
 func main() {
@@ -221,6 +224,9 @@ func call(method, endpoint string, body []byte, out any) error {
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if token := os.Getenv("RUNLEDGER_TOKEN"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {

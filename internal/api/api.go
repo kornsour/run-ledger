@@ -2,12 +2,14 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kornsour/run-ledger/internal/compare"
@@ -15,32 +17,117 @@ import (
 	"github.com/kornsour/run-ledger/internal/store"
 )
 
+// Auth holds the bearer tokens that gate access to the API. A zero-value Auth
+// requires no token at all, which is the default: a single-user local ledger
+// has no one to authenticate against.
+//
+// WriteToken grants both reads and writes. ReadToken grants reads only, so a
+// dashboard or a CI job can be handed a credential that cannot record runs.
+type Auth struct {
+	WriteToken string
+	ReadToken  string
+}
+
+func (a Auth) enabled() bool {
+	return a.WriteToken != "" || a.ReadToken != ""
+}
+
+// allows reports whether token authorizes the given access. write requests
+// need the write token; reads accept either token.
+func (a Auth) allows(write bool, token string) bool {
+	if a.WriteToken != "" && constantTimeEqual(token, a.WriteToken) {
+		return true
+	}
+	if !write && a.ReadToken != "" && constantTimeEqual(token, a.ReadToken) {
+		return true
+	}
+	return false
+}
+
+func constantTimeEqual(a, b string) bool {
+	// ConstantTimeCompare itself only compares in constant time when the
+	// lengths already match; the length check below is not a secret, so
+	// leaking it early does not weaken the comparison.
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // Server wires the store to an HTTP mux.
 type Server struct {
 	store store.Store
 	log   *slog.Logger
+	auth  Auth
+}
+
+// Option configures a Server at construction time.
+type Option func(*Server)
+
+// WithAuth requires a bearer token on every request except /healthz. Leaving
+// this unset (or passing a zero-value Auth) leaves the server unauthenticated.
+func WithAuth(a Auth) Option {
+	return func(s *Server) { s.auth = a }
 }
 
 // New returns a Server. A nil logger discards output.
-func New(s store.Store, log *slog.Logger) *Server {
+func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Server{store: s, log: log}
+	srv := &Server{store: s, log: log}
+	for _, opt := range opts {
+		opt(srv)
+	}
+	if !srv.auth.enabled() {
+		log.Warn("running without authentication: any client that can reach this server can write to the ledger; set RUNLEDGER_TOKEN to require a bearer token")
+	}
+	return srv
 }
 
 // Handler returns the routed mux.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /runs", s.record)
-	mux.HandleFunc("GET /runs", s.list)
-	mux.HandleFunc("GET /runs/{id}", s.get)
-	mux.HandleFunc("GET /compare", s.compare)
+	mux.HandleFunc("POST /runs", s.requireAuth(true, s.record))
+	mux.HandleFunc("GET /runs", s.requireAuth(false, s.list))
+	mux.HandleFunc("GET /runs/{id}", s.requireAuth(false, s.get))
+	mux.HandleFunc("GET /compare", s.requireAuth(false, s.compare))
+	// /healthz stays unauthenticated so a liveness probe does not need a
+	// credential.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	return mux
+}
+
+// requireAuth wraps next so it only runs once the request carries a bearer
+// token Auth allows for the given access. With no token configured at all,
+// every request passes through unchecked.
+func (s *Server) requireAuth(write bool, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.auth.enabled() {
+			next(w, r)
+			return
+		}
+		token, ok := bearerToken(r)
+		if !ok || !s.auth.allows(write, token) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
+			writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
+			return
+		}
+		next(w, r)
+	}
+}
+
+func bearerToken(r *http.Request) (string, bool) {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, prefix) {
+		return "", false
+	}
+	token := strings.TrimPrefix(h, prefix)
+	return token, token != ""
 }
 
 func (s *Server) record(w http.ResponseWriter, r *http.Request) {
