@@ -403,6 +403,110 @@ func TestReadTokenCannotWrite(t *testing.T) {
 	}
 }
 
+func TestFingerprintsListOnlyIncludesRepeats(t *testing.T) {
+	h := srv(t)
+	// Two runs of the same experiment (identical identity fields, so they
+	// share a fingerprint), one run of a different experiment.
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"metrics":{"loss":0.1}}`)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var out struct {
+		Count  int `json:"count"`
+		Groups []struct {
+			Fingerprint string `json:"fingerprint"`
+			Count       int    `json:"count"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Count != 1 || len(out.Groups) != 1 {
+		t.Fatalf("want exactly one group with repeats, got %+v", out)
+	}
+	if out.Groups[0].Count != 2 {
+		t.Fatalf("want the repeated group to report 2 runs, got %d", out.Groups[0].Count)
+	}
+}
+
+func TestFingerprintOneGroupReportsMetricStats(t *testing.T) {
+	h := srv(t)
+	var a, b map[string]any
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	_ = json.Unmarshal(w.Body.Bytes(), &a)
+	w = post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
+	_ = json.Unmarshal(w.Body.Bytes(), &b)
+	fp := a["fingerprint"].(string)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var out struct {
+		Count     int  `json:"count"`
+		NoRepeats bool `json:"no_repeats"`
+		Metrics   map[string]struct {
+			Count  int     `json:"count"`
+			Mean   float64 `json:"mean"`
+			StdDev float64 `json:"stddev"`
+		} `json:"metrics"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.NoRepeats || out.Count != 2 {
+		t.Fatalf("want a two-run group, not no_repeats, got %+v", out)
+	}
+	loss, ok := out.Metrics["loss"]
+	if !ok || loss.Count != 2 {
+		t.Fatalf("want a loss stat over both runs, got %+v", out.Metrics)
+	}
+	if loss.Mean != 0.45 {
+		t.Fatalf("want mean 0.45, got %v", loss.Mean)
+	}
+}
+
+func TestFingerprintSingleRunIsNoRepeats(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	fp := created["fingerprint"].(string)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var out struct {
+		NoRepeats bool           `json:"no_repeats"`
+		Metrics   map[string]any `json:"metrics"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.NoRepeats {
+		t.Fatal("a single run recorded for this fingerprint must be reported as no repeats")
+	}
+	if len(out.Metrics) != 0 {
+		t.Fatalf("a no-repeats group must not report metric stats, got %+v", out.Metrics)
+	}
+}
+
+func TestFingerprintUnknownIs404(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/nope", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", w.Code)
+	}
+}
+
 func patch(t *testing.T, h http.Handler, id, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()

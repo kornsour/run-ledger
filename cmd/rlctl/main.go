@@ -11,11 +11,13 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/kornsour/run-ledger/internal/compare"
 	"github.com/kornsour/run-ledger/internal/lineage"
+	"github.com/kornsour/run-ledger/internal/spread"
 )
 
 const usage = `rlctl — record and compare experiment runs
@@ -32,6 +34,8 @@ const usage = `rlctl — record and compare experiment runs
                            back as --cursor to fetch the following page.
   rlctl show   <run-id>
   rlctl diff   <run-a> <run-b>
+  rlctl spread [--project P]     Rank fingerprints with repeats by widest metric spread.
+  rlctl spread <fingerprint>     Show per-metric count/min/max/mean/stddev for one group.
 
   --server defaults to $RUNLEDGER_ADDR or http://localhost:8080
   RUNLEDGER_TOKEN, if set, is sent as a bearer token on every request. It is
@@ -60,6 +64,8 @@ func main() {
 		err = cmdShow(os.Args[2:])
 	case "diff":
 		err = cmdDiff(os.Args[2:])
+	case "spread":
+		err = cmdSpread(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -320,6 +326,87 @@ func cmdDiff(args []string) error {
 		fmt.Println("Something that affected the result is not captured in the record.")
 	}
 	return nil
+}
+
+func cmdSpread(args []string) error {
+	fs := flag.NewFlagSet("spread", flag.ExitOnError)
+	server := fs.String("server", defaultServer(), "ledger address")
+	project := fs.String("project", "", "filter by project (spread listing only)")
+	_ = fs.Parse(args)
+
+	switch fs.NArg() {
+	case 0:
+		return spreadList(*server, *project)
+	case 1:
+		return spreadOne(*server, fs.Arg(0))
+	default:
+		return fmt.Errorf("spread takes either --project or exactly one fingerprint, not both")
+	}
+}
+
+func spreadList(server, project string) error {
+	q := url.Values{}
+	set(q, "project", project)
+	var out struct {
+		Groups []spread.Group `json:"groups"`
+		Count  int            `json:"count"`
+	}
+	if err := call(http.MethodGet, server+"/fingerprints?"+q.Encode(), nil, &out); err != nil {
+		return err
+	}
+	if out.Count == 0 {
+		fmt.Println("no fingerprint has more than one recorded run")
+		return nil
+	}
+	// The server already ranks widest-first; keep that order.
+	fmt.Printf("%-18s  %-5s  %-10s  %s\n", "FINGERPRINT", "RUNS", "WIDEST CV", "PROVENANCE DIFFERS")
+	for _, g := range out.Groups {
+		fmt.Printf("%-18s  %-5d  %-10.4f  %s\n",
+			trunc(g.Fingerprint, 18), g.Count, g.Widest(), provenanceFields(g.Provenance))
+	}
+	return nil
+}
+
+func spreadOne(server, fingerprint string) error {
+	var g spread.Group
+	if err := call(http.MethodGet, server+"/fingerprints/"+url.PathEscape(fingerprint), nil, &g); err != nil {
+		return err
+	}
+	fmt.Printf("fingerprint %s — %d run(s)\n", g.Fingerprint, g.Count)
+	if g.NoRepeats {
+		fmt.Println("no repeats: only one run has been recorded for this experiment")
+		return nil
+	}
+
+	keys := make([]string, 0, len(g.Metrics))
+	for k := range g.Metrics {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Printf("\n%-20s  %-4s  %-12s  %-12s  %-12s  %s\n", "METRIC", "N", "MIN", "MAX", "MEAN", "STDDEV")
+	for _, k := range keys {
+		m := g.Metrics[k]
+		fmt.Printf("%-20s  %-4d  %-12g  %-12g  %-12g  %g\n", k, m.Count, m.Min, m.Max, m.Mean, m.StdDev)
+	}
+
+	if len(g.Provenance) > 0 {
+		fmt.Println("\nprovenance differs across these runs — the likeliest explanation for the spread:")
+		for _, p := range g.Provenance {
+			fmt.Printf("  %-18s %s\n", p.Field, strings.Join(p.Values, ", "))
+		}
+	}
+	return nil
+}
+
+func provenanceFields(diffs []spread.ProvenanceDiff) string {
+	if len(diffs) == 0 {
+		return "—"
+	}
+	names := make([]string, len(diffs))
+	for i, d := range diffs {
+		names[i] = d.Field
+	}
+	return strings.Join(names, ", ")
 }
 
 func call(method, endpoint string, body []byte, out any) error {

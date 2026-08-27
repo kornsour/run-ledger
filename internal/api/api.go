@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/kornsour/run-ledger/internal/compare"
 	"github.com/kornsour/run-ledger/internal/lineage"
 	"github.com/kornsour/run-ledger/internal/metrics"
+	"github.com/kornsour/run-ledger/internal/spread"
 	"github.com/kornsour/run-ledger/internal/store"
 )
 
@@ -124,6 +126,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /runs", s.requireAuth(false, s.list))
 	mux.HandleFunc("GET /runs/{id}", s.requireAuth(false, s.get))
 	mux.HandleFunc("GET /compare", s.requireAuth(false, s.compare))
+	mux.HandleFunc("GET /fingerprints", s.requireAuth(false, s.spreadList))
+	mux.HandleFunc("GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne))
 	// /healthz stays unauthenticated so a liveness probe does not need a
 	// credential.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -474,6 +478,48 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 		"result":         res,
 		"unattributable": res.Unattributable(),
 	})
+}
+
+// spreadList answers "which experiments in this project reproduce worst?" --
+// every fingerprint with more than one recorded run, ranked by the widest
+// relative metric spread. project is optional; omitted, it ranks across
+// every project the store holds.
+func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
+	// Limit: 0 is intentionally unbounded here -- spread has to see every
+	// run for a fingerprint to report its true spread, not just one page.
+	page, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
+	if err != nil {
+		s.metrics.StoreError("internal")
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	var groups []spread.Group
+	for _, g := range spread.Compute(page.Runs) {
+		if g.Count > 1 {
+			groups = append(groups, g)
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool { return groups[i].Widest() > groups[j].Widest() })
+	writeJSON(w, http.StatusOK, map[string]any{"groups": groups, "count": len(groups)})
+}
+
+// spreadOne answers "how much do this experiment's own repeats vary?" for
+// one fingerprint, including a group of size one -- reported as no repeats
+// rather than a misleadingly perfect standard deviation of zero.
+func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
+	fp := r.PathValue("fingerprint")
+	page, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
+	if err != nil {
+		s.metrics.StoreError("internal")
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if len(page.Runs) == 0 {
+		s.metrics.StoreError("not_found")
+		writeErr(w, http.StatusNotFound, fmt.Errorf("no run recorded with fingerprint %q", fp))
+		return
+	}
+	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
 }
 
 // parseLimit resolves the effective page size for GET /runs: DefaultListLimit
