@@ -11,12 +11,9 @@ services:
       # Dockerfile. rlctl reads this same variable as a full server URL, so
       # don't set it for a client container -- only the server wants ":8080".
       RUNLEDGER_ADDR: ":8080"
+      RUNLEDGER_STORE: "duckdb"
+      RUNLEDGER_DSN: "/data/runs.duckdb"
     volumes:
-      # The only backend today (internal/store.Memory) keeps nothing on disk,
-      # so this volume is unused until a durable backend (issue #1) lands --
-      # it just gives that backend a mount point ready to go, matching the
-      # *.duckdb/*.db pattern already in .gitignore, without another compose
-      # change on the day it's needed.
       - runledger-data:/data
     restart: unless-stopped
 

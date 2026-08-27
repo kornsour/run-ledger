@@ -77,11 +77,20 @@ Or bring it up in a container instead of building locally:
 docker compose up
 ```
 
-That builds the image from the `Dockerfile` and starts `runledger` on
-`:8080` with a persistent volume mounted for the store (currently unused --
-see [Status](#status)). Published images land on `ghcr.io/lurking-walrus/run-ledger`
-on tagged releases; `make image` builds the same image locally for the host
-platform.
+That builds the image from the `Dockerfile` and starts `runledger` on `:8080`
+with the durable DuckDB backend (`internal/store.DuckDB`), the database file
+on a persistent volume at `/data/runs.duckdb`. Published images land on
+`ghcr.io/lurking-walrus/run-ledger` on tagged releases; `make image` builds
+the same image locally for the host platform.
+
+Running `./bin/runledger` directly still defaults to the in-memory store --
+nothing survives a restart, and no DSN or cgo build is required to try it.
+Pass `--store duckdb --dsn ./runs.duckdb` (or `RUNLEDGER_STORE=duckdb` /
+`RUNLEDGER_DSN=./runs.duckdb`) to opt into the durable backend directly:
+
+```bash
+./bin/runledger --store duckdb --dsn ./runs.duckdb &
+```
 
 ## Layout
 
@@ -89,7 +98,7 @@ platform.
 cmd/runledger/     HTTP server
 cmd/rlctl/         researcher CLI: record · list · show · diff
 internal/lineage/  the Run record, validation, content-addressed fingerprint
-internal/store/    Store interface + in-memory reference implementation
+internal/store/    Store interface + in-memory reference and DuckDB backends
 internal/compare/  structured diff, identity vs provenance vs metric
 internal/api/      HTTP handlers
 python/runledger/  in-process Python client: `Run.start()` as a context manager
@@ -204,11 +213,24 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   buffers status and metrics locally and sends one record when the outcome is
   known, rather than a `running` record it cannot later revise.
   ([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md))
+- **`store.DuckDB` links libduckdb via cgo, on purpose.** Analytical queries over
+  a high-cardinality key space are what this ledger is for, and that is a
+  column-oriented workload SQLite (row-oriented) answers slowly and ClickHouse
+  (a server to operate) answers at the wrong deployment shape. The cost is real:
+  `CGO_ENABLED=0` no longer builds this module, and the container image needs a
+  C toolchain and a matching libc instead of `distroless/static`.
+  ([ADR 0006](docs/adr/0006-duckdb-store-backend-and-the-cgo-cost.md))
 
 ## Status
 
-The in-memory store is the only backend, so nothing survives a restart. A durable,
-queryable backend is the next piece of work — see the issue tracker.
+`Memory` (the default; `--store memory` or unset) keeps nothing on disk. `DuckDB`
+(`--store duckdb --dsn <path>`, or `RUNLEDGER_STORE=duckdb` / `RUNLEDGER_DSN=...`)
+is durable and answers the analytical queries this ledger is for — every run of
+a project, grouped by fingerprint, with the spread of a metric across the
+group — without the linear Go-side scan `Memory` does. `Query`
+(`internal/store/store.go`) does not expose a `params.*` / `metrics.*` filter
+yet; the schema (`internal/store/duckdb.go`) is shaped so that is a `WHERE`
+clause away, not a migration, when it's needed.
 
 ## Archive
 
