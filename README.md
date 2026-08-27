@@ -131,12 +131,43 @@ implementation cannot quietly disagree about ordering or idempotency.
 |---|---|---|
 | `POST` | `/runs` | record a run; the server assigns the fingerprint and id |
 | `PATCH` | `/runs/{id}` | update a run's provenance: `status`, `ended_at`, `checkpoint_uri`, `metrics`, `host`, `device`, `framework_version` |
-| `GET` | `/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`, `limit` |
+| `GET` | `/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`; paginated, see below |
 | `GET` | `/runs/{id}` | one run |
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
 | `GET` | `/healthz` | liveness |
 | `GET` | `/readyz` | readiness — the store answers a call |
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
+
+### Pagination
+
+`GET /runs` returns a page, not the whole result set:
+
+```json
+{"runs": [ ... ], "count": 50, "limit": 50, "next_cursor": "v1:..."}
+```
+
+- `limit` requests a page size; the server accepts up to 500 and defaults to
+  50 when omitted. The response's own `limit` field is the size actually
+  applied — always check it rather than assuming the request was honored
+  verbatim.
+- `next_cursor` is present only when more rows may follow. Pass it back as
+  `?cursor=...` to fetch the next page; its absence means the traversal is
+  done. Treat the value as opaque — it encodes an internal sort position, not
+  a row offset, and its format is not part of the API contract.
+- Pages are ordered newest-first (`started_at`, then `run_id` as a tiebreak)
+  and paginated by that same key, not by `LIMIT`/`OFFSET`. A run inserted
+  between two `List` calls does not shift what a later page returns the way
+  it would with offset pagination — no row already visited is ever skipped
+  or repeated because of a concurrent insert.
+- **What a page is consistent with:** each page reflects the ledger as of
+  its cursor's position, not a single fixed snapshot of the whole listing.
+  A row recorded after a traversal begins, and sorting behind whatever
+  position the traversal has already reached, is simply not visited by that
+  traversal — it is exactly the kind of row a fresh `GET /runs` (no cursor)
+  would show first. For an append-mostly ledger this is the cheap, honest
+  contract: no page ever repeats or skips a row that existed before the
+  traversal reached it, and nothing is promised about rows that did not.
+  See [ADR 0007](docs/adr/0007-keyset-pagination-cursor-consistency.md).
 
 ## Python client
 
@@ -248,6 +279,14 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   `CGO_ENABLED=0` no longer builds this module, and the container image needs a
   C toolchain and a matching libc instead of `distroless/static`.
   ([ADR 0006](docs/adr/0006-duckdb-store-backend-and-the-cgo-cost.md))
+- **`GET /runs` paginates by keyset cursor, not `LIMIT`/`OFFSET`, and is capped
+  server-side.** An offset shifts under concurrent inserts, silently skipping a
+  row a client paging through history should have seen; a cursor encoding the
+  last row's sort key does not. A page is consistent with the ledger as of the
+  cursor's position — a row recorded after a traversal begins is simply not in
+  it, the same as it wouldn't be in a fresh, uncursored request made at that
+  same moment.
+  ([ADR 0007](docs/adr/0007-keyset-pagination-cursor-consistency.md))
 
 ## Status
 

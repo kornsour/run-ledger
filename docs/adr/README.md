@@ -17,6 +17,8 @@ section is a summary of these; this folder is the account.
 | [0003](0003-dirty-tree-without-config-hash-is-refused.md) | A dirty working tree without a config hash is refused | Accepted |
 | [0004](0004-fingerprint-input-is-a-versioned-contract.md) | The fingerprint input is a versioned contract | Accepted |
 | [0005](0005-python-client-writes-once-at-the-end.md) | The Python client writes the ledger exactly once, at the end of a run | Accepted |
+| [0006](0006-duckdb-store-backend-and-the-cgo-cost.md) | `store.DuckDB` as the durable backend, and accepting cgo to get it | Accepted |
+| [0007](0007-keyset-pagination-cursor-consistency.md) | `GET /runs` paginates by keyset cursor, and a page is consistent with the cursor's position, not a fixed snapshot | Accepted |
 
 ## Adding a record
 

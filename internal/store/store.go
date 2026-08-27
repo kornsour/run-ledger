@@ -22,14 +22,51 @@ var ErrNotFound = errors.New("run not found")
 // history unreliable.
 var ErrConflict = errors.New("run already recorded with different content")
 
-// Query filters a run listing. A zero-valued field does not filter.
+// Cursor names a position in a run listing's total order — newest first by
+// StartedAt, RunID ascending as the tiebreak (the same order every Store
+// implementation sorts List's result in). It is how List paginates by
+// keyset instead of offset: "give me what comes after this row" stays
+// correct when rows are inserted concurrently, where "give me rows 20-40"
+// does not, because an insert ahead of the traversal shifts every offset
+// after it and a page silently skips or repeats a row.
+type Cursor struct {
+	StartedAt time.Time
+	RunID     string
+}
+
+// Query filters and paginates a run listing. A zero-valued field does not
+// filter.
 type Query struct {
 	Project     string
 	GitCommit   string
 	Fingerprint string
 	Status      lineage.Status
 	Device      string
-	Limit       int
+	// Limit caps the number of rows a single List call returns. Zero means
+	// unbounded — callers that page (the HTTP API's GET /runs) are expected
+	// to supply their own default and maximum; Store itself imposes none, so
+	// a Go-level caller that genuinely wants everything (the /readyz probe,
+	// the ledger-size gauge) still can.
+	Limit int
+	// After, when non-nil, restricts the listing to rows strictly following
+	// this cursor in the total order — the keyset for the page that comes
+	// next. Nil means "start from the top."
+	After *Cursor
+}
+
+// Page is one page of a Store.List result.
+type Page struct {
+	Runs []lineage.Run
+	// Next is the cursor for the following page. It is non-nil only when
+	// List's Limit truncated the result — i.e. more rows may exist beyond
+	// this page. A caller that keeps passing Next back as Query.After until
+	// it comes back nil has visited every row that existed at or before the
+	// position each successive call reached; a row recorded elsewhere after
+	// the traversal began, sorting behind where the traversal already is, is
+	// never visited by it. That is a deliberate, documented trade for an
+	// append-mostly ledger — see README.md's "Pagination" section — not an
+	// oversight.
+	Next *Cursor
 }
 
 // Patch is a partial update to a run, as accepted by Store.Update.
@@ -81,7 +118,7 @@ type Store interface {
 	// terminal run is a finished outcome, not a waypoint.
 	Update(ctx context.Context, runID string, p Patch) (lineage.Run, error)
 	Get(ctx context.Context, runID string) (lineage.Run, error)
-	List(ctx context.Context, q Query) ([]lineage.Run, error)
+	List(ctx context.Context, q Query) (Page, error)
 	Close() error
 }
 

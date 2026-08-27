@@ -368,7 +368,7 @@ func loadKVFloat(ctx context.Context, q queryer, runID string) (map[string]float
 	return out, rows.Err()
 }
 
-func (d *DuckDB) List(ctx context.Context, query Query) ([]lineage.Run, error) {
+func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	where := []string{}
 	args := []any{}
 	add := func(col, val string) {
@@ -382,6 +382,13 @@ func (d *DuckDB) List(ctx context.Context, query Query) ([]lineage.Run, error) {
 	add("fingerprint", query.Fingerprint)
 	add("status", string(query.Status))
 	add("device", query.Device)
+	if query.After != nil {
+		// Keyset predicate for "strictly after this row in (started_at_ns
+		// DESC, run_id ASC) order": either an earlier started_at, or the same
+		// started_at with a run_id that sorts later.
+		where = append(where, "(started_at_ns < ? OR (started_at_ns = ? AND run_id > ?))")
+		args = append(args, query.After.StartedAt.UnixNano(), query.After.StartedAt.UnixNano(), query.After.RunID)
+	}
 
 	sqlStr := `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
@@ -395,12 +402,16 @@ func (d *DuckDB) List(ctx context.Context, query Query) ([]lineage.Run, error) {
 	// uses, so ordering does not depend on which backend answered.
 	sqlStr += " ORDER BY started_at_ns DESC, run_id ASC"
 	if query.Limit > 0 {
-		sqlStr += fmt.Sprintf(" LIMIT %d", query.Limit)
+		// Ask for one extra row so we can tell "exactly Limit rows exist"
+		// apart from "more rows follow" without a second round trip -- that
+		// extra row, if present, is trimmed below and becomes the cursor for
+		// the next page instead of being returned.
+		sqlStr += fmt.Sprintf(" LIMIT %d", query.Limit+1)
 	}
 
 	rows, err := d.db.QueryContext(ctx, sqlStr, args...)
 	if err != nil {
-		return nil, err
+		return Page{}, err
 	}
 	var runs []lineage.Run
 	runIDs := []string{}
@@ -415,7 +426,7 @@ func (d *DuckDB) List(ctx context.Context, query Query) ([]lineage.Run, error) {
 			&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 		); err != nil {
 			rows.Close()
-			return nil, err
+			return Page{}, err
 		}
 		r.Status = lineage.Status(status)
 		r.StartedAt = nsToTime(startedAtNS)
@@ -427,17 +438,25 @@ func (d *DuckDB) List(ctx context.Context, query Query) ([]lineage.Run, error) {
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
+		return Page{}, err
 	}
 	rows.Close()
+
+	var next *Cursor
+	if query.Limit > 0 && len(runs) > query.Limit {
+		runs = runs[:query.Limit]
+		runIDs = runIDs[:query.Limit]
+		last := runs[len(runs)-1]
+		next = &Cursor{StartedAt: last.StartedAt, RunID: last.RunID}
+	}
 
 	// Hydrate params/metrics for the page in two batched queries rather than
 	// one round trip per run -- List answers "every run of this project",
 	// which is exactly the case with the most rows to hydrate.
 	if err := hydrate(ctx, d.db, runs, runIDs); err != nil {
-		return nil, err
+		return Page{}, err
 	}
-	return runs, nil
+	return Page{Runs: runs, Next: next}, nil
 }
 
 func hydrate(ctx context.Context, q queryer, runs []lineage.Run, runIDs []string) error {
