@@ -92,6 +92,7 @@ internal/lineage/  the Run record, validation, content-addressed fingerprint
 internal/store/    Store interface + in-memory reference implementation
 internal/compare/  structured diff, identity vs provenance vs metric
 internal/api/      HTTP handlers
+python/runledger/  in-process Python client: `Run.start()` as a context manager
 ```
 
 Every directory here contains code. The store is an interface with a conformance
@@ -109,6 +110,37 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/healthz` | liveness |
 | `GET` | `/readyz` | readiness — the store answers a call |
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
+
+## Python client
+
+Training code is Python, and the moment a run's lineage is available is
+inside the training script — so recording it there, in-process, beats
+shelling out to `rlctl` or hand-rolling an HTTP call.
+
+```python
+import runledger
+
+with runledger.Run.start(project="demo", seed=1, params={"lr": 3e-4}) as run:
+    for step in range(steps):
+        loss = train_step()
+        run.log_metric("loss", loss)
+```
+
+It captures the same git context `rlctl record` does — commit, dirty flag —
+and refuses the same way when there is no commit, or when the tree is dirty
+with no `config_hash`. Framework and device provenance (`torch.__version__`,
+`jax.__version__`, the active device) are captured automatically when either
+library is importable. A ledger that is down, slow, or unreachable degrades
+to a warning and a local spool file — it never raises into the middle of a
+training run. See [`python/README.md`](python/README.md) for the full
+worked example (wrap a loop, raise partway through, see the run recorded as
+`failed` with the metrics it got to) and why the client makes exactly one
+HTTP call, at the end, rather than one at each end of the run
+([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md)).
+
+```bash
+pip install -e ./python
+```
 
 ## Auth
 
@@ -167,6 +199,11 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   justify breaking that. `runledger_runs` is read from the store at scrape
   time rather than tracked as a local counter, since recording is idempotent
   and a retried record must not inflate it.
+- **The Python client writes the ledger once, at the end of a run, not once at
+  each end.** `POST /runs` has no update path yet, so `runledger.Run.start()`
+  buffers status and metrics locally and sends one record when the outcome is
+  known, rather than a `running` record it cannot later revise.
+  ([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md))
 
 ## Status
 

@@ -38,3 +38,16 @@ jobs:
         run: make build
       - name: Build image
         run: make image
+
+  python:
+    # No docker in this job, so it isn't pinned to the wsl pool the way
+    # `build` is -- any self-hosted runner in the shared group can take it.
+    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux"]' || '["ubuntu-latest"]') }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Test
+        run: python3 -m unittest discover -s python/tests -v
