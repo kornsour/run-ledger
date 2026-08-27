@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,15 @@ import (
 	"github.com/kornsour/run-ledger/internal/spread"
 	"github.com/kornsour/run-ledger/internal/store"
 )
+
+// DefaultListLimit is the page size GET /runs uses when a request does not
+// specify limit.
+const DefaultListLimit = 50
+
+// MaxListLimit is the largest page GET /runs will ever return, regardless of
+// what limit a request asks for. Without a ceiling, a client (or the size of
+// the ledger itself) decides how large a response the server hands back.
+const MaxListLimit = 500
 
 // Auth holds the bearer tokens that gate access to the API. A zero-value Auth
 // requires no token at all, which is the default: a single-user local ledger
@@ -95,11 +105,14 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 	// must not inflate it, and once the store is out of process it becomes
 	// the only source of truth anyway.
 	srv.metrics = metrics.New(func() float64 {
-		runs, err := s.List(context.Background(), store.Query{})
+		// Query{} with no Limit is intentionally unbounded here -- this is
+		// the total ledger size, not a page of it. GET /runs's own default
+		// and maximum limit live at the HTTP handler, not in the store.
+		page, err := s.List(context.Background(), store.Query{})
 		if err != nil {
 			return -1
 		}
-		return float64(len(runs))
+		return float64(len(page.Runs))
 	})
 	return srv
 }
@@ -306,20 +319,70 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	runs, err := s.store.List(r.Context(), store.Query{
+	var after *store.Cursor
+	if raw := q.Get("cursor"); raw != "" {
+		c, err := decodeCursor(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		after = &c
+	}
+	page, err := s.store.List(r.Context(), store.Query{
 		Project:     q.Get("project"),
 		GitCommit:   q.Get("git_commit"),
 		Fingerprint: q.Get("fingerprint"),
 		Status:      lineage.Status(q.Get("status")),
 		Device:      q.Get("device"),
 		Limit:       limit,
+		After:       after,
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runs": runs, "count": len(runs)})
+	resp := map[string]any{"runs": page.Runs, "count": len(page.Runs), "limit": limit}
+	// next_cursor is present only when more rows may follow this page --
+	// its absence is how a client knows the traversal is done, not an empty
+	// string it has to special-case.
+	if page.Next != nil {
+		resp["next_cursor"] = encodeCursor(*page.Next)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// encodeCursor and decodeCursor make a store.Cursor an opaque token safe to
+// hand to a client and accept back. The wire format (a version tag, the
+// start-time in nanoseconds, and the run id, colon-separated and
+// base64url-encoded) is not part of the API contract -- callers must treat
+// the string as opaque -- but is versioned so a future change to what a
+// cursor encodes cannot be silently misread as the old format.
+const cursorVersion = "v1"
+
+func encodeCursor(c store.Cursor) string {
+	raw := fmt.Sprintf("%s:%d:%s", cursorVersion, c.StartedAt.UnixNano(), c.RunID)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeCursor(s string) (store.Cursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return store.Cursor{}, fmt.Errorf("invalid cursor")
+	}
+	version, rest, ok := strings.Cut(string(raw), ":")
+	if !ok || version != cursorVersion {
+		return store.Cursor{}, fmt.Errorf("invalid or unsupported cursor")
+	}
+	nsStr, runID, ok := strings.Cut(rest, ":")
+	if !ok || runID == "" {
+		return store.Cursor{}, fmt.Errorf("invalid cursor")
+	}
+	ns, err := strconv.ParseInt(nsStr, 10, 64)
+	if err != nil {
+		return store.Cursor{}, fmt.Errorf("invalid cursor")
+	}
+	return store.Cursor{StartedAt: time.Unix(0, ns).UTC(), RunID: runID}, nil
 }
 
 func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
@@ -352,14 +415,16 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 // relative metric spread. project is optional; omitted, it ranks across
 // every project the store holds.
 func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
+	// Limit: 0 is intentionally unbounded here -- spread has to see every
+	// run for a fingerprint to report its true spread, not just one page.
+	page, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
 	if err != nil {
 		s.metrics.StoreError("internal")
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	var groups []spread.Group
-	for _, g := range spread.Compute(runs) {
+	for _, g := range spread.Compute(page.Runs) {
 		if g.Count > 1 {
 			groups = append(groups, g)
 		}
@@ -373,27 +438,35 @@ func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
 // rather than a misleadingly perfect standard deviation of zero.
 func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 	fp := r.PathValue("fingerprint")
-	runs, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
+	page, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
 	if err != nil {
 		s.metrics.StoreError("internal")
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	if len(runs) == 0 {
+	if len(page.Runs) == 0 {
 		s.metrics.StoreError("not_found")
 		writeErr(w, http.StatusNotFound, fmt.Errorf("no run recorded with fingerprint %q", fp))
 		return
 	}
-	writeJSON(w, http.StatusOK, spread.One(fp, runs))
+	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
 }
 
+// parseLimit resolves the effective page size for GET /runs: DefaultListLimit
+// when the request specifies none, the request's own value when it is a
+// valid positive integer at or under MaxListLimit, and MaxListLimit itself
+// when the request asks for more than that. There is deliberately no way to
+// request "unlimited" -- that is the behavior this cap exists to remove.
 func parseLimit(s string) (int, error) {
 	if s == "" {
-		return 0, nil
+		return DefaultListLimit, nil
 	}
 	n, err := strconv.Atoi(s)
-	if err != nil || n < 0 {
-		return 0, fmt.Errorf("limit must be a non-negative integer, got %q", s)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("limit must be a positive integer, got %q", s)
+	}
+	if n > MaxListLimit {
+		n = MaxListLimit
 	}
 	return n, nil
 }

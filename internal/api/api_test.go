@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -132,10 +133,104 @@ func TestCompareFlagsUnattributableDifference(t *testing.T) {
 }
 
 func TestBadLimitIsRejected(t *testing.T) {
+	for _, limit := range []string{"-3", "0", "not-a-number"} {
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?limit="+limit, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("limit=%s: want 400, got %d", limit, w.Code)
+		}
+	}
+}
+
+func TestBadCursorIsRejected(t *testing.T) {
+	for _, cursor := range []string{"not-base64url!!", "aGVsbG8", ""} {
+		if cursor == "" {
+			continue // empty cursor means "from the top", not an error
+		}
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?cursor="+cursor, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("cursor=%s: want 400, got %d: %s", cursor, w.Code, w.Body)
+		}
+	}
+}
+
+func TestListDefaultsAndCapsLimit(t *testing.T) {
+	h := srv(t)
+	for i := 0; i < 3; i++ {
+		w := post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"c%d","config_hash":"cfg"}`, i))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+		}
+	}
+
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?limit=-3", nil))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("want 400, got %d", w.Code)
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?project=p", nil))
+	var got struct {
+		Runs  []map[string]any `json:"runs"`
+		Count int              `json:"count"`
+		Limit int              `json:"limit"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Limit != DefaultListLimit {
+		t.Fatalf("want the effective limit echoed as %d, got %d", DefaultListLimit, got.Limit)
+	}
+	if got.Count != 3 {
+		t.Fatalf("want 3 runs under the default limit, got %d", got.Count)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/runs?project=p&limit=%d", MaxListLimit+1000), nil))
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Limit != MaxListLimit {
+		t.Fatalf("a request over MaxListLimit must be clamped, got effective limit %d", got.Limit)
+	}
+}
+
+func TestListCursorPagesWithoutSkippingOrRepeating(t *testing.T) {
+	h := srv(t)
+	const n = 5
+	for i := 0; i < n; i++ {
+		w := post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"c%d","config_hash":"cfg"}`, i))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+		}
+	}
+
+	type page struct {
+		Runs       []map[string]any `json:"runs"`
+		NextCursor string           `json:"next_cursor"`
+	}
+	seen := map[string]bool{}
+	cursor := ""
+	for i := 0; i < n+1; i++ { // +1 guards against a cursor that never terminates
+		url := "/runs?project=p&limit=2"
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("page %d: want 200, got %d: %s", i, w.Code, w.Body)
+		}
+		var p page
+		if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
+			t.Fatalf("page %d: %v", i, err)
+		}
+		for _, r := range p.Runs {
+			id := r["run_id"].(string)
+			if seen[id] {
+				t.Fatalf("run %q was returned on more than one page", id)
+			}
+			seen[id] = true
+		}
+		if p.NextCursor == "" {
+			break
+		}
+		cursor = p.NextCursor
+	}
+	if len(seen) != n {
+		t.Fatalf("want all %d runs visited across pages, got %d: %v", n, len(seen), seen)
 	}
 }
 

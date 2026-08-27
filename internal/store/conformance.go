@@ -79,10 +79,11 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		want := []string{"new", "mid", "old"}
 		for i := 0; i < 20; i++ {
-			got, err := s.List(ctx, Query{Project: "p"})
+			page, err := s.List(ctx, Query{Project: "p"})
 			if err != nil {
 				t.Fatal(err)
 			}
+			got := page.Runs
 			if len(got) != len(want) {
 				t.Fatalf("want %d runs, got %d", len(want), len(got))
 			}
@@ -90,6 +91,9 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 				if got[j].RunID != want[j] {
 					t.Fatalf("iteration %d: want %v, got %s at %d", i, want, got[j].RunID, j)
 				}
+			}
+			if page.Next != nil {
+				t.Fatalf("an unbounded query must not report a next page, got %+v", page.Next)
 			}
 		}
 	})
@@ -99,10 +103,11 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		now := time.Now()
 		_ = s.Record(ctx, mk("a", "alpha", now))
 		_ = s.Record(ctx, mk("b", "beta", now.Add(-time.Minute)))
-		got, err := s.List(ctx, Query{Project: "alpha"})
+		page, err := s.List(ctx, Query{Project: "alpha"})
 		if err != nil {
 			t.Fatal(err)
 		}
+		got := page.Runs
 		if len(got) != 1 || got[0].RunID != "a" {
 			t.Fatalf("project filter did not narrow: %+v", got)
 		}
@@ -129,12 +134,12 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 				t.Fatalf("goroutine %d: re-recording identical content concurrently should succeed, got %v", i, err)
 			}
 		}
-		got, err := s.List(ctx, Query{Project: "p"})
+		page, err := s.List(ctx, Query{Project: "p"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 1 {
-			t.Fatalf("want exactly one row after %d concurrent identical writes, got %d: %+v", n, len(got), got)
+		if len(page.Runs) != 1 {
+			t.Fatalf("want exactly one row after %d concurrent identical writes, got %d: %+v", n, len(page.Runs), page.Runs)
 		}
 	})
 
@@ -177,12 +182,12 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		if _, err := s.Get(ctx, "a"); err != nil {
 			t.Fatalf("the winning write should be readable, got %v", err)
 		}
-		got, err := s.List(ctx, Query{Project: "p"})
+		page, err := s.List(ctx, Query{Project: "p"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 1 {
-			t.Fatalf("want exactly one row after %d concurrent conflicting writes, got %d: %+v", n, len(got), got)
+		if len(page.Runs) != 1 {
+			t.Fatalf("want exactly one row after %d concurrent conflicting writes, got %d: %+v", n, len(page.Runs), page.Runs)
 		}
 	})
 
@@ -202,12 +207,12 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 					return
 				default:
 				}
-				got, err := s.List(ctx, Query{Project: "p"})
+				page, err := s.List(ctx, Query{Project: "p"})
 				if err != nil {
 					violations <- fmt.Errorf("List returned an error during concurrent writes: %w", err)
 					return
 				}
-				for _, r := range got {
+				for _, r := range page.Runs {
 					// A torn write would show up here as a run missing the
 					// fields Record is required to have set together, or as
 					// a run whose provenance doesn't match its identity.
@@ -243,26 +248,128 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 			t.Fatal(err)
 		}
 
-		got, err := s.List(ctx, Query{Project: "p"})
+		page, err := s.List(ctx, Query{Project: "p"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != n {
-			t.Fatalf("want %d runs after concurrent writes, got %d", n, len(got))
+		if len(page.Runs) != n {
+			t.Fatalf("want %d runs after concurrent writes, got %d", n, len(page.Runs))
 		}
 	})
 
-	t.Run("limit truncates after ordering", func(t *testing.T) {
+	t.Run("limit truncates after ordering, and reports a next cursor", func(t *testing.T) {
 		s := newStore(t)
 		now := time.Now()
 		_ = s.Record(ctx, mk("old", "p", now.Add(-time.Hour)))
 		_ = s.Record(ctx, mk("new", "p", now))
-		got, err := s.List(ctx, Query{Project: "p", Limit: 1})
+		page, err := s.List(ctx, Query{Project: "p", Limit: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 1 || got[0].RunID != "new" {
-			t.Fatalf("limit must keep the newest, got %+v", got)
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "new" {
+			t.Fatalf("limit must keep the newest, got %+v", page.Runs)
+		}
+		if page.Next == nil {
+			t.Fatal("a truncated page must report a next cursor")
+		}
+		next, err := s.List(ctx, Query{Project: "p", Limit: 1, After: page.Next})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(next.Runs) != 1 || next.Runs[0].RunID != "old" {
+			t.Fatalf("the next page must pick up where the cursor left off, got %+v", next.Runs)
+		}
+		if next.Next != nil {
+			t.Fatalf("the last page must not report a further cursor, got %+v", next.Next)
+		}
+	})
+
+	t.Run("a page exactly the size of the result set reports no next cursor", func(t *testing.T) {
+		s := newStore(t)
+		now := time.Now()
+		_ = s.Record(ctx, mk("old", "p", now.Add(-time.Hour)))
+		_ = s.Record(ctx, mk("new", "p", now))
+		page, err := s.List(ctx, Query{Project: "p", Limit: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 2 {
+			t.Fatalf("want both runs, got %+v", page.Runs)
+		}
+		if page.Next != nil {
+			t.Fatalf("a page that exhausts the result set must not report a next cursor, got %+v", page.Next)
+		}
+	})
+
+	t.Run("keyset pagination visits every pre-existing row exactly once under concurrent inserts", func(t *testing.T) {
+		s := newStore(t)
+		now := time.Now()
+		const preExisting = 40
+		const pageSize = 7
+		want := map[string]bool{}
+		for i := 0; i < preExisting; i++ {
+			id := fmt.Sprintf("pre-%03d", i)
+			// Spread StartedAt out so ties (same instant, different run id) get
+			// exercised too, not just the common case of distinct timestamps.
+			at := now.Add(-time.Duration(i/2) * time.Second)
+			if err := s.Record(ctx, mk(id, "p", at)); err != nil {
+				t.Fatal(err)
+			}
+			want[id] = true
+		}
+
+		// A concurrent writer keeps inserting new, newer-than-anything-so-far
+		// rows for the whole traversal. A traversal that used LIMIT/OFFSET
+		// would have every page after the first shift by however many of
+		// these landed ahead of it, and would skip or repeat a pre-existing
+		// row; keyset pagination must not.
+		stopInserts := make(chan struct{})
+		var inserters sync.WaitGroup
+		inserters.Add(1)
+		go func() {
+			defer inserters.Done()
+			i := 0
+			for {
+				select {
+				case <-stopInserts:
+					return
+				default:
+				}
+				id := fmt.Sprintf("concurrent-%04d", i)
+				_ = s.Record(ctx, mk(id, "p", time.Now().Add(time.Duration(i)*time.Millisecond)))
+				i++
+			}
+		}()
+
+		seen := map[string]int{}
+		var cursor *Cursor
+		for {
+			page, err := s.List(ctx, Query{Project: "p", Limit: pageSize, After: cursor})
+			if err != nil {
+				close(stopInserts)
+				inserters.Wait()
+				t.Fatal(err)
+			}
+			for _, r := range page.Runs {
+				seen[r.RunID]++
+			}
+			if page.Next == nil {
+				break
+			}
+			cursor = page.Next
+		}
+		close(stopInserts)
+		inserters.Wait()
+
+		for id := range want {
+			if seen[id] != 1 {
+				t.Fatalf("pre-existing row %q was visited %d times, want exactly 1", id, seen[id])
+			}
+		}
+		for id, n := range seen {
+			if n > 1 {
+				t.Fatalf("row %q was visited %d times, want at most 1", id, n)
+			}
 		}
 	})
 }
