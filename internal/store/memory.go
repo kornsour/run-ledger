@@ -38,6 +38,21 @@ func (m *Memory) Record(_ context.Context, r lineage.Run) error {
 	return nil
 }
 
+func (m *Memory) Update(_ context.Context, runID string, p Patch) (lineage.Run, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	existing, ok := m.runs[runID]
+	if !ok {
+		return lineage.Run{}, ErrNotFound
+	}
+	updated, err := applyPatch(existing, p)
+	if err != nil {
+		return lineage.Run{}, err
+	}
+	m.runs[runID] = updated
+	return updated, nil
+}
+
 func (m *Memory) Get(_ context.Context, runID string) (lineage.Run, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

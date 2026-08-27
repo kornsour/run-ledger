@@ -252,6 +252,146 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("update on an unknown id is ErrNotFound", func(t *testing.T) {
+		s := newStore(t)
+		status := lineage.StatusRunning
+		if _, err := s.Update(ctx, "nope", Patch{Status: &status}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("want ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("update walks the run through its lifecycle", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusCreated
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+
+		running := lineage.StatusRunning
+		got, err := s.Update(ctx, "a", Patch{Status: &running})
+		if err != nil {
+			t.Fatalf("created -> running: %v", err)
+		}
+		if got.Status != lineage.StatusRunning {
+			t.Fatalf("want running, got %s", got.Status)
+		}
+
+		succeeded := lineage.StatusSucceeded
+		endedAt := time.Now()
+		got, err = s.Update(ctx, "a", Patch{
+			Status:  &succeeded,
+			EndedAt: &endedAt,
+			Metrics: map[string]float64{"loss": 0.1},
+		})
+		if err != nil {
+			t.Fatalf("running -> succeeded: %v", err)
+		}
+		if got.Status != lineage.StatusSucceeded || got.Metrics["loss"] != 0.1 {
+			t.Fatalf("want succeeded with loss=0.1, got %+v", got)
+		}
+		if !got.EndedAt.Equal(endedAt) {
+			t.Fatalf("ended_at not applied: got %v, want %v", got.EndedAt, endedAt)
+		}
+
+		// The updated run is durable, not just returned.
+		reGot, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reGot.Status != lineage.StatusSucceeded || reGot.Metrics["loss"] != 0.1 {
+			t.Fatalf("update did not persist: %+v", reGot)
+		}
+	})
+
+	t.Run("update merges metrics instead of replacing the map", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 1.0}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := s.Update(ctx, "a", Patch{Metrics: map[string]float64{"acc": 0.5}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Metrics["loss"] != 1.0 || got.Metrics["acc"] != 0.5 {
+			t.Fatalf("want both metrics present, got %+v", got.Metrics)
+		}
+
+		// Re-reporting an existing key overwrites just that key.
+		got, err = s.Update(ctx, "a", Patch{Metrics: map[string]float64{"loss": 0.2}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Metrics["loss"] != 0.2 || got.Metrics["acc"] != 0.5 {
+			t.Fatalf("want loss overwritten and acc untouched, got %+v", got.Metrics)
+		}
+	})
+
+	t.Run("update refuses to change an identity field", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		other := "different-commit"
+		if _, err := s.Update(ctx, "a", Patch{GitCommit: &other}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("want ErrConflict for a changed identity field, got %v", err)
+		}
+		// The identity field matching the existing value is not a conflict.
+		same := r.GitCommit
+		if _, err := s.Update(ctx, "a", Patch{GitCommit: &same, Status: &r.Status}); err != nil {
+			t.Fatalf("an unchanged identity field must not conflict, got %v", err)
+		}
+	})
+
+	t.Run("update refuses an illegal status transition", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusCreated
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		if _, err := s.Update(ctx, "a", Patch{Status: &succeeded}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("created -> succeeded must skip illegally, want ErrConflict, got %v", err)
+		}
+	})
+
+	t.Run("update refuses any change once a run is terminal", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now()) // mk sets StatusSucceeded
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		uri := "s3://bucket/ckpt"
+		if _, err := s.Update(ctx, "a", Patch{CheckpointURI: &uri}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a terminal run must refuse further updates, got %v", err)
+		}
+		cancelled := lineage.StatusCancelled
+		if _, err := s.Update(ctx, "a", Patch{Status: &cancelled}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a transition out of a terminal state must be ErrConflict, got %v", err)
+		}
+	})
+
+	t.Run("update rejects an unknown status", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusCreated
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		bogus := lineage.Status("bogus")
+		if _, err := s.Update(ctx, "a", Patch{Status: &bogus}); err == nil || errors.Is(err, ErrConflict) {
+			t.Fatalf("an unrecognized status should be a plain error, not ErrConflict or nil: %v", err)
+		}
+	})
+
 	t.Run("limit truncates after ordering", func(t *testing.T) {
 		s := newStore(t)
 		now := time.Now()
