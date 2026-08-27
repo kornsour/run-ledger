@@ -98,14 +98,19 @@ implementation cannot quietly disagree about ordering or idempotency.
 
 ## Decisions worth knowing
 
+This is a summary. The full reasoning — context, consequences, and what would
+have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
+
 - **The server computes the fingerprint, never the client.** A caller that could
   assert its own fingerprint could claim two different experiments were the same
-  run.
+  run. ([ADR 0001](docs/adr/0001-server-computes-the-fingerprint.md))
 - **Unknown JSON fields are rejected.** A typo'd field name in a lineage record
   would otherwise store a run that claims to describe an experiment it does not.
+  ([ADR 0002](docs/adr/0002-unknown-json-fields-are-rejected.md))
 - **A dirty working tree without a config hash is refused.** The commit no longer
   describes the code that ran, so the config hash is the only remaining handle on
   what actually executed.
+  ([ADR 0003](docs/adr/0003-dirty-tree-without-config-hash-is-refused.md))
 - **Re-recording identical content is idempotent; different content under the
   same id is a conflict.** Silently overwriting a lineage record would make
   history unreliable.
@@ -114,7 +119,11 @@ implementation cannot quietly disagree about ordering or idempotency.
 - **Hashed fields are length-prefixed** so `("ab","c")` and `("a","bc")` cannot
   collide, and **params are sorted before hashing** because Go randomizes map
   iteration — without that, the same experiment fingerprints differently between
-  runs of the same binary.
+  runs of the same binary. **The fingerprint input — which fields, in what
+  order, with what delimiting — is a versioned contract**: changing it orphans
+  every fingerprint already recorded, and needs a version field plus a
+  documented migration, not a patch release.
+  ([ADR 0004](docs/adr/0004-fingerprint-input-is-a-versioned-contract.md))
 
 ## Status
 
