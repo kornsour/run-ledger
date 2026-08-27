@@ -48,7 +48,7 @@ func (m *Memory) Get(_ context.Context, runID string) (lineage.Run, error) {
 	return r, nil
 }
 
-func (m *Memory) List(_ context.Context, q Query) ([]lineage.Run, error) {
+func (m *Memory) List(_ context.Context, q Query) (Page, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	out := make([]lineage.Run, 0, len(m.runs))
@@ -78,10 +78,38 @@ func (m *Memory) List(_ context.Context, q Query) ([]lineage.Run, error) {
 		}
 		return out[i].RunID < out[j].RunID
 	})
-	if q.Limit > 0 && len(out) > q.Limit {
-		out = out[:q.Limit]
+	if q.After != nil {
+		after := *q.After
+		// out is already sorted in the traversal order, and "comes strictly
+		// after the cursor" is monotonic over it (false*, then true*), so a
+		// binary search finds the first surviving row in O(log n) instead of
+		// a linear scan.
+		i := sort.Search(len(out), func(i int) bool { return isAfterCursor(out[i], after) })
+		out = out[i:]
 	}
-	return out, nil
+	return paginate(out, q.Limit), nil
+}
+
+// isAfterCursor reports whether r sorts strictly after c in List's total
+// order (StartedAt descending, RunID ascending on a tie) — i.e. whether r
+// belongs on the page that follows c.
+func isAfterCursor(r lineage.Run, c Cursor) bool {
+	if r.StartedAt.Equal(c.StartedAt) {
+		return r.RunID > c.RunID
+	}
+	return r.StartedAt.Before(c.StartedAt)
+}
+
+// paginate truncates an already-ordered, already-after-cursor slice to
+// Limit rows and reports the cursor for what follows, if anything does.
+// Limit <= 0 means unbounded: the whole slice, no next page.
+func paginate(runs []lineage.Run, limit int) Page {
+	if limit <= 0 || len(runs) <= limit {
+		return Page{Runs: runs}
+	}
+	page := runs[:limit]
+	last := page[len(page)-1]
+	return Page{Runs: page, Next: &Cursor{StartedAt: last.StartedAt, RunID: last.RunID}}
 }
 
 func (m *Memory) Close() error { return nil }

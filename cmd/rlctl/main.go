@@ -22,7 +22,9 @@ const usage = `rlctl — record and compare experiment runs
 
   rlctl record --project P [--seed N] [--dataset V] [--model V] [--param k=v ...] [--metric k=v ...]
                            Capture git context from the working tree and record a run.
-  rlctl list   [--project P] [--commit SHA] [--status S] [--limit N]
+  rlctl list   [--project P] [--commit SHA] [--status S] [--limit N] [--cursor C]
+                           Server caps --limit; pass the printed "next cursor"
+                           back as --cursor to fetch the following page.
   rlctl show   <run-id>
   rlctl diff   <run-a> <run-b>
 
@@ -137,18 +139,21 @@ func cmdList(args []string) error {
 	project := fs.String("project", "", "filter by project")
 	commit := fs.String("commit", "", "filter by git commit")
 	status := fs.String("status", "", "filter by status")
-	limit := fs.Int("limit", 20, "maximum rows")
+	limit := fs.Int("limit", 20, "maximum rows (server-capped; see --help)")
+	cursor := fs.String("cursor", "", "opaque page cursor from a previous list's \"next cursor\" line")
 	_ = fs.Parse(args)
 
 	q := url.Values{}
 	set(q, "project", *project)
 	set(q, "git_commit", *commit)
 	set(q, "status", *status)
+	set(q, "cursor", *cursor)
 	q.Set("limit", fmt.Sprint(*limit))
 
 	var out struct {
-		Runs  []lineage.Run `json:"runs"`
-		Count int           `json:"count"`
+		Runs       []lineage.Run `json:"runs"`
+		Count      int           `json:"count"`
+		NextCursor string        `json:"next_cursor"`
 	}
 	if err := call(http.MethodGet, *server+"/runs?"+q.Encode(), nil, &out); err != nil {
 		return err
@@ -162,6 +167,12 @@ func cmdList(args []string) error {
 		fmt.Printf("%-28s  %-12s  %-10s  %-10s  %s\n",
 			r.RunID, trunc(r.Project, 12), r.Status, trunc(r.GitCommit, 10),
 			r.StartedAt.Local().Format(time.RFC3339))
+	}
+	// A page reflects the ledger as of the cursor's position: a run recorded
+	// after this list started, and sorting earlier than the traversal has
+	// reached, will not appear when you follow this cursor.
+	if out.NextCursor != "" {
+		fmt.Printf("\nmore runs available: rlctl list ... --cursor %s\n", out.NextCursor)
 	}
 	return nil
 }
