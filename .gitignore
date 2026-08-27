@@ -3,3 +3,6 @@ bin/
 *.db
 coverage.out
 .DS_Store
+__pycache__/
+*.egg-info/
+*.pyc

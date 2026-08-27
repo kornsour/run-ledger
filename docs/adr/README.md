@@ -16,6 +16,7 @@ section is a summary of these; this folder is the account.
 | [0002](0002-unknown-json-fields-are-rejected.md) | Unknown JSON fields are rejected | Accepted |
 | [0003](0003-dirty-tree-without-config-hash-is-refused.md) | A dirty working tree without a config hash is refused | Accepted |
 | [0004](0004-fingerprint-input-is-a-versioned-contract.md) | The fingerprint input is a versioned contract | Accepted |
+| [0005](0005-python-client-writes-once-at-the-end.md) | The Python client writes the ledger exactly once, at the end of a run | Accepted |
 
 ## Adding a record
 
