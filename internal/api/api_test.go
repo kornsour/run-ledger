@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/kornsour/run-ledger/internal/metrics"
 	"github.com/kornsour/run-ledger/internal/store"
 )
 
@@ -142,6 +144,89 @@ func TestHealthz(t *testing.T) {
 	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", w.Code)
+	}
+}
+
+func TestReadyzOKWhenStoreAnswers(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestRequestIDIsEchoedAndGeneratedWhenAbsent(t *testing.T) {
+	h := srv(t)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Header().Get("X-Request-Id") == "" {
+		t.Fatal("no X-Request-Id generated for a request that sent none")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("X-Request-Id", "caller-supplied-id")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if got := w.Header().Get("X-Request-Id"); got != "caller-supplied-id" {
+		t.Fatalf("want caller's request id echoed back, got %q", got)
+	}
+}
+
+func TestPanicRecoversInto500(t *testing.T) {
+	s := &Server{store: store.NewMemory(), log: slog.New(slog.DiscardHandler)}
+	s.metrics = metrics.New(func() float64 { return 0 })
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /boom", func(http.ResponseWriter, *http.Request) {
+		panic("kaboom")
+	})
+	h := s.instrument(mux)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/boom", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("want 500 after a handler panic, got %d", w.Code)
+	}
+}
+
+func TestMetricsEndpointExposesRunsRecordedCounter(t *testing.T) {
+	h := srv(t)
+	post(t, h, `{"project":"demo","git_commit":"abc","config_hash":"cfg","status":"succeeded"}`)
+	post(t, h, `{"project":"demo","git_commit":"def","config_hash":"cfg","status":"succeeded"}`)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	want := `runledger_runs_recorded_total{project="demo",status="succeeded"} 2`
+	if !strings.Contains(body, want) {
+		t.Fatalf("counter did not increment as expected; want to find %q in:\n%s", want, body)
+	}
+	if !strings.Contains(body, "runledger_runs 2") {
+		t.Fatalf("runs gauge did not reflect the store; got:\n%s", body)
+	}
+}
+
+func TestMetricsEndpointReportsStoreConflict(t *testing.T) {
+	h := srv(t)
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg","run_id":"fixed-id"}`
+	post(t, h, body) // first record succeeds
+
+	w := httptest.NewRecorder()
+	// Same run id, different content -> conflict.
+	req := httptest.NewRequest(http.MethodPost, "/runs",
+		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(w.Body.String(), `runledger_store_errors_total{kind="conflict"} 1`) {
+		t.Fatalf("store error counter did not record the conflict; got:\n%s", w.Body.String())
 	}
 }
 

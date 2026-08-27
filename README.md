@@ -95,6 +95,8 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/runs/{id}` | one run |
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
 | `GET` | `/healthz` | liveness |
+| `GET` | `/readyz` | readiness — the store answers a call |
+| `GET` | `/metrics` | self-metrics, Prometheus exposition format |
 
 ## Auth
 
@@ -148,6 +150,11 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   every fingerprint already recorded, and needs a version field plus a
   documented migration, not a patch release.
   ([ADR 0004](docs/adr/0004-fingerprint-input-is-a-versioned-contract.md))
+- **`/metrics` is hand-rolled, not built on a client library.** The project ships
+  as one dependency-free binary, and a few counters and a histogram don't
+  justify breaking that. `runledger_runs` is read from the store at scrape
+  time rather than tracked as a local counter, since recording is idempotent
+  and a retried record must not inflate it.
 
 ## Status
 
