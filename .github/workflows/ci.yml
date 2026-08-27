@@ -10,13 +10,15 @@ permissions:
 
 jobs:
   build:
-    # Self-hosted when CI_RUNNER names a runner, GitHub-hosted otherwise. The
-    # fallback matters: this repo's runner lives in a container on a laptop, and
-    # an unset or wrong variable would otherwise queue the job forever with no
-    # runner able to claim it -- which is exactly what happened to the sibling
-    # lab repos when their Windows runners were deregistered while CI_RUNNER
-    # still named them.
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["ubuntu-latest"]') }}
+    # Pinned to the WSL pool specifically, not the bare self-hosted fleet: this
+    # job runs `make image` (a real docker build), and the Mac pool's runners
+    # are themselves Docker containers with no nested Docker available. Landing
+    # there fails with "make: docker: No such file or directory" -- a
+    # structural incompatibility, not a flaky failure. See
+    # Lurking-Walrus/.github-private#82. The fallback to ubuntu-latest matters
+    # too: an unset or false switch must not queue this job forever with no
+    # runner able to claim it.
+    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -34,3 +36,5 @@ jobs:
         run: go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
       - name: Build
         run: make build
+      - name: Build image
+        run: make image

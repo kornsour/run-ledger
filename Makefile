@@ -1,4 +1,7 @@
-.PHONY: build test vet fmt lint cover clean run
+.PHONY: build test vet fmt lint cover clean run image
+
+IMAGE ?= run-ledger
+TAG ?= dev
 
 build:
 	@mkdir -p bin
@@ -23,6 +26,11 @@ cover:
 
 run: build
 	./bin/runledger
+
+# Builds the same binary as `build`, containerized, for the host platform --
+# not the multi-arch image CI publishes on a tag (see .github/workflows/image.yml).
+image:
+	docker build -t $(IMAGE):$(TAG) .
 
 clean:
 	rm -rf bin coverage.out
