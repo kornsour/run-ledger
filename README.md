@@ -49,6 +49,23 @@ B=$(./bin/rlctl record --project demo --seed 1 --config-hash cfg1 \
 ./bin/rlctl diff $A $B
 ```
 
+A run can also be recorded at submission time, before its outcome is known,
+and walked through its lifecycle as it happens:
+
+```bash
+R=$(./bin/rlctl record --project demo --seed 1 --config-hash cfg1)  # status: created
+./bin/rlctl start $R                                                # status: running
+./bin/rlctl finish --metric loss=0.42 --checkpoint s3://bucket/ckpt $R
+# status: succeeded, ended_at set, loss recorded
+
+# or, if the run didn't make it:
+./bin/rlctl fail $R                                                  # status: failed
+```
+
+`start`/`finish`/`fail` only move a run forward — `created → running →
+{succeeded, failed, cancelled}` — and can never change what experiment the
+run was; see [PATCH `/runs/{id}`](#api) below.
+
 ```
 same experiment (fingerprints match)
 
@@ -96,7 +113,7 @@ Pass `--store duckdb --dsn ./runs.duckdb` (or `RUNLEDGER_STORE=duckdb` /
 
 ```
 cmd/runledger/     HTTP server
-cmd/rlctl/         researcher CLI: record · list · show · diff · spread
+cmd/rlctl/         researcher CLI: record · start · finish · fail · list · show · diff · spread
 internal/lineage/  the Run record, validation, content-addressed fingerprint
 internal/store/    Store interface + in-memory reference and DuckDB backends
 internal/compare/  structured diff, identity vs provenance vs metric
@@ -114,6 +131,7 @@ implementation cannot quietly disagree about ordering or idempotency.
 | Method | Path | |
 |---|---|---|
 | `POST` | `/runs` | record a run; the server assigns the fingerprint and id |
+| `PATCH` | `/runs/{id}` | update a run's provenance: `status`, `ended_at`, `checkpoint_uri`, `metrics`, `host`, `device`, `framework_version` |
 | `GET` | `/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`; paginated, see below |
 | `GET` | `/runs/{id}` | one run |
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
@@ -227,6 +245,16 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
 - **Re-recording identical content is idempotent; different content under the
   same id is a conflict.** Silently overwriting a lineage record would make
   history unreliable.
+- **`PATCH /runs/{id}` moves a run's provenance forward; it can never rewrite
+  what experiment it was.** Identity fields (`project`, `git_commit`,
+  `git_dirty`, `config_hash`, `dataset_version`, `model_version`, `seed`,
+  `params`) are checked against the stored run and a mismatch is a `409`, not
+  an update. Status only moves `created → running → {succeeded, failed,
+  cancelled}`; a transition out of a terminal state — including a same-status
+  or metrics-only patch — is also a `409`, because a terminal run is a
+  finished outcome, not a waypoint. Metrics are merged into the existing map,
+  not replaced, so a long run can report as it goes; re-reporting an existing
+  key overwrites just that key.
 - **An absent metric is not a zero.** They print differently and diff
   differently.
 - **Hashed fields are length-prefixed** so `("ab","c")` and `("a","bc")` cannot

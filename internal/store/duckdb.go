@@ -217,6 +217,62 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	return tx.Commit()
 }
 
+// Update applies a partial, provenance-only change to an already-recorded
+// run. Like Record, it serializes behind d.mu and reads-then-writes inside
+// one critical section, since a read-modify-write across two unguarded
+// statements is exactly the race the mutex exists to rule out.
+func (d *DuckDB) Update(ctx context.Context, runID string, p Patch) (lineage.Run, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	existing, err := d.get(ctx, d.db, runID)
+	if err != nil {
+		return lineage.Run{}, err
+	}
+	updated, err := applyPatch(existing, p)
+	if err != nil {
+		return lineage.Run{}, err
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return lineage.Run{}, err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	var endedAt any
+	if !updated.EndedAt.IsZero() {
+		endedAt = updated.EndedAt.UnixNano()
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE runs SET status = ?, ended_at_ns = ?, checkpoint_uri = ?,
+			host = ?, device = ?, framework_version = ?
+		WHERE run_id = ?`,
+		string(updated.Status), endedAt, updated.CheckpointURI,
+		updated.Host, updated.Device, updated.FrameworkVersion, runID,
+	); err != nil {
+		return lineage.Run{}, fmt.Errorf("updating run: %w", err)
+	}
+
+	// Only the keys the patch actually touched -- merging happened in
+	// applyPatch against the Go value, so this upserts p.Metrics (the
+	// delta), not updated.Metrics (the full merged map).
+	for k, v := range p.Metrics {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO run_metrics (run_id, key, value) VALUES (?, ?, ?)
+			ON CONFLICT (run_id, key) DO UPDATE SET value = excluded.value`,
+			runID, k, v,
+		); err != nil {
+			return lineage.Run{}, fmt.Errorf("upserting metric %q: %w", k, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return lineage.Run{}, err
+	}
+	return updated, nil
+}
+
 // queryer is the subset of *sql.DB and *sql.Tx that reads need.
 type queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row

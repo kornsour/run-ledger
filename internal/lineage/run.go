@@ -58,6 +58,15 @@ var validStatuses = map[Status]bool{
 	StatusFailed: true, StatusCancelled: true,
 }
 
+// ValidStatus reports whether s is one of the known lifecycle states.
+func ValidStatus(s Status) bool { return validStatuses[s] }
+
+// Terminal reports whether s is a state a run does not leave: succeeded,
+// failed, and cancelled are outcomes, not waypoints.
+func Terminal(s Status) bool {
+	return s == StatusSucceeded || s == StatusFailed || s == StatusCancelled
+}
+
 // ErrDirtyTree is returned by Validate when a run reports a dirty working tree
 // without an explicit config hash. A dirty tree means the commit does not
 // describe the code that ran, so the config hash is the only remaining handle
