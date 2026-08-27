@@ -403,6 +403,110 @@ func TestReadTokenCannotWrite(t *testing.T) {
 	}
 }
 
+func patch(t *testing.T, h http.Handler, id, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/runs/"+id, strings.NewReader(body)))
+	return w
+}
+
+func TestUpdateWalksCreatedToSucceeded(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"status":"running"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("created -> running: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	w = patch(t, h, id, `{"status":"succeeded","ended_at":"2999-01-01T00:00:00Z","metrics":{"loss":0.1}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("running -> succeeded: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["status"] != "succeeded" {
+		t.Fatalf("want status succeeded, got %v", got["status"])
+	}
+	metrics, _ := got["metrics"].(map[string]any)
+	if metrics["loss"] != 0.1 {
+		t.Fatalf("want loss=0.1 in the response, got %v", got["metrics"])
+	}
+}
+
+func TestUpdateUnknownRunIs404(t *testing.T) {
+	w := patch(t, srv(t), "nope", `{"status":"running"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateRejectsIdentityChange(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"git_commit":"different"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("changing an identity field must be 409, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateRejectsIllegalTransition(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`) // starts at "created"
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"status":"succeeded"}`) // created -> succeeded skips running
+	if w.Code != http.StatusConflict {
+		t.Fatalf("an illegal transition must be 409, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateRejectsChangeToTerminalRun(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","status":"succeeded"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"checkpoint_uri":"s3://bucket/ckpt"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("a patch to a terminal run must be 409, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateUnknownFieldIsRejected(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"statuz":"running"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a typo'd field must be refused, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateRequiresWriteToken(t *testing.T) {
+	h := srvWithAuth(t, Auth{WriteToken: "write-secret", ReadToken: "read-secret"})
+	req := httptest.NewRequest(http.MethodPatch, "/runs/whatever", strings.NewReader(`{"status":"running"}`))
+	req.Header.Set("Authorization", "Bearer read-secret")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("a read token must not be able to PATCH, got %d: %s", w.Code, w.Body)
+	}
+}
+
 func TestHealthzUnauthenticatedEvenWithTokenConfigured(t *testing.T) {
 	h := srvWithAuth(t, Auth{WriteToken: "write-secret"})
 	w := httptest.NewRecorder()

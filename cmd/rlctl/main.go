@@ -22,6 +22,11 @@ const usage = `rlctl — record and compare experiment runs
 
   rlctl record --project P [--seed N] [--dataset V] [--model V] [--param k=v ...] [--metric k=v ...]
                            Capture git context from the working tree and record a run.
+  rlctl start  <run-id>    Mark a recorded run running.
+  rlctl finish [--status succeeded|failed|cancelled] [--metric k=v ...] [--checkpoint URI] <run-id>
+                           Move a running run to a terminal status. --status defaults to succeeded.
+  rlctl fail   [--metric k=v ...] <run-id>
+                           Shorthand for finish --status failed.
   rlctl list   [--project P] [--commit SHA] [--status S] [--limit N] [--cursor C]
                            Server caps --limit; pass the printed "next cursor"
                            back as --cursor to fetch the following page.
@@ -43,6 +48,12 @@ func main() {
 	switch os.Args[1] {
 	case "record":
 		err = cmdRecord(os.Args[2:])
+	case "start":
+		err = cmdStart(os.Args[2:])
+	case "finish":
+		err = cmdFinish(os.Args[2:])
+	case "fail":
+		err = cmdFail(os.Args[2:])
 	case "list":
 		err = cmdList(os.Args[2:])
 	case "show":
@@ -131,6 +142,89 @@ func cmdRecord(args []string) error {
 	}
 	fmt.Println(out.RunID)
 	return nil
+}
+
+func cmdStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	server := fs.String("server", defaultServer(), "ledger address")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("start takes exactly one run id")
+	}
+	out, err := patchRun(*server, fs.Arg(0), map[string]any{"status": string(lineage.StatusRunning)})
+	if err != nil {
+		return err
+	}
+	fmt.Println(out.RunID, out.Status)
+	return nil
+}
+
+func cmdFinish(args []string) error {
+	fs := flag.NewFlagSet("finish", flag.ExitOnError)
+	server := fs.String("server", defaultServer(), "ledger address")
+	status := fs.String("status", string(lineage.StatusSucceeded), "terminal status: succeeded, failed, or cancelled")
+	checkpoint := fs.String("checkpoint", "", "checkpoint URI")
+	metrics := kvFlag{}
+	fs.Var(metrics, "metric", "measured metric, key=value (repeatable)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("finish takes exactly one run id")
+	}
+	return finishRun(*server, fs.Arg(0), *status, *checkpoint, metrics)
+}
+
+func cmdFail(args []string) error {
+	fs := flag.NewFlagSet("fail", flag.ExitOnError)
+	server := fs.String("server", defaultServer(), "ledger address")
+	metrics := kvFlag{}
+	fs.Var(metrics, "metric", "measured metric, key=value (repeatable)")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("fail takes exactly one run id")
+	}
+	return finishRun(*server, fs.Arg(0), string(lineage.StatusFailed), "", metrics)
+}
+
+// finishRun moves a run to a terminal status, setting ended_at to now and
+// optionally a checkpoint URI and metrics. finish and fail share it because
+// fail is exactly finish --status failed with no checkpoint.
+func finishRun(server, runID, status, checkpoint string, metricFlags kvFlag) error {
+	patch := map[string]any{
+		"status":   status,
+		"ended_at": time.Now().UTC(),
+	}
+	if checkpoint != "" {
+		patch["checkpoint_uri"] = checkpoint
+	}
+	if len(metricFlags) > 0 {
+		m := map[string]float64{}
+		for k, v := range metricFlags {
+			var f float64
+			if _, err := fmt.Sscanf(v, "%g", &f); err != nil {
+				return fmt.Errorf("metric %s=%s is not a number", k, v)
+			}
+			m[k] = f
+		}
+		patch["metrics"] = m
+	}
+	out, err := patchRun(server, runID, patch)
+	if err != nil {
+		return err
+	}
+	fmt.Println(out.RunID, out.Status)
+	return nil
+}
+
+func patchRun(server, runID string, fields map[string]any) (lineage.Run, error) {
+	body, err := json.Marshal(fields)
+	if err != nil {
+		return lineage.Run{}, err
+	}
+	var out lineage.Run
+	if err := call(http.MethodPatch, server+"/runs/"+url.PathEscape(runID), body, &out); err != nil {
+		return lineage.Run{}, err
+	}
+	return out, nil
 }
 
 func cmdList(args []string) error {

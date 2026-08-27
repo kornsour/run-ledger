@@ -120,6 +120,7 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /runs", s.requireAuth(true, s.record))
+	mux.HandleFunc("PATCH /runs/{id}", s.requireAuth(true, s.update))
 	mux.HandleFunc("GET /runs", s.requireAuth(false, s.list))
 	mux.HandleFunc("GET /runs/{id}", s.requireAuth(false, s.get))
 	mux.HandleFunc("GET /compare", s.requireAuth(false, s.compare))
@@ -291,6 +292,75 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	s.metrics.RecordRun(run.Project, string(run.Status))
 	s.log.Info("recorded run", "run_id", run.RunID, "project", run.Project, "fingerprint", run.Fingerprint)
 	writeJSON(w, http.StatusCreated, run)
+}
+
+// patchRequest is the PATCH /runs/{id} body. Every field is a pointer (or,
+// for the two map fields, a nil-vs-set map) so the handler can tell "the
+// caller did not mention this" apart from "the caller set this to its zero
+// value" -- a plain lineage.Run cannot make that distinction, and a PATCH
+// endpoint runs on it.
+//
+// The identity fields are listed here too, even though PATCH exists to
+// carry provenance: a client that sends one is not silently ignored, it is
+// checked against the stored run and rejected with a conflict if it
+// differs. Leaving them out of this struct entirely would turn an attempt
+// to rewrite a run's identity into a same-looking "unknown field" 400
+// instead of the 409 that states what actually happened.
+type patchRequest struct {
+	Project        *string           `json:"project"`
+	GitCommit      *string           `json:"git_commit"`
+	GitDirty       *bool             `json:"git_dirty"`
+	ConfigHash     *string           `json:"config_hash"`
+	DatasetVersion *string           `json:"dataset_version"`
+	ModelVersion   *string           `json:"model_version"`
+	Seed           *int64            `json:"seed"`
+	Params         map[string]string `json:"params"`
+
+	Status           *lineage.Status    `json:"status"`
+	EndedAt          *time.Time         `json:"ended_at"`
+	CheckpointURI    *string            `json:"checkpoint_uri"`
+	Host             *string            `json:"host"`
+	Device           *string            `json:"device"`
+	FrameworkVersion *string            `json:"framework_version"`
+	Metrics          map[string]float64 `json:"metrics"`
+}
+
+func (s *Server) update(w http.ResponseWriter, r *http.Request) {
+	var req patchRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	p := store.Patch{
+		Project: req.Project, GitCommit: req.GitCommit, GitDirty: req.GitDirty,
+		ConfigHash: req.ConfigHash, DatasetVersion: req.DatasetVersion,
+		ModelVersion: req.ModelVersion, Seed: req.Seed, Params: req.Params,
+		Status: req.Status, EndedAt: req.EndedAt, CheckpointURI: req.CheckpointURI,
+		Host: req.Host, Device: req.Device, FrameworkVersion: req.FrameworkVersion,
+		Metrics: req.Metrics,
+	}
+	run, err := s.store.Update(r.Context(), r.PathValue("id"), p)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			s.metrics.StoreError("not_found")
+			writeErr(w, http.StatusNotFound, err)
+		case errors.Is(err, store.ErrConflict):
+			s.metrics.StoreError("conflict")
+			writeErr(w, http.StatusConflict, err)
+		default:
+			s.metrics.StoreError("invalid")
+			writeErr(w, http.StatusBadRequest, err)
+		}
+		return
+	}
+	if req.Status != nil {
+		s.metrics.RecordRun(run.Project, string(run.Status))
+	}
+	s.log.Info("updated run", "run_id", run.RunID, "project", run.Project, "status", run.Status)
+	writeJSON(w, http.StatusOK, run)
 }
 
 func (s *Server) get(w http.ResponseWriter, r *http.Request) {
