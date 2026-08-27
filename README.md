@@ -96,10 +96,11 @@ Pass `--store duckdb --dsn ./runs.duckdb` (or `RUNLEDGER_STORE=duckdb` /
 
 ```
 cmd/runledger/     HTTP server
-cmd/rlctl/         researcher CLI: record · list · show · diff
+cmd/rlctl/         researcher CLI: record · list · show · diff · spread
 internal/lineage/  the Run record, validation, content-addressed fingerprint
 internal/store/    Store interface + in-memory reference and DuckDB backends
 internal/compare/  structured diff, identity vs provenance vs metric
+internal/spread/   per-fingerprint metric spread across repeated runs
 internal/api/      HTTP handlers
 python/runledger/  in-process Python client: `Run.start()` as a context manager
 ```
@@ -116,6 +117,8 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`, `limit` |
 | `GET` | `/runs/{id}` | one run |
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
+| `GET` | `/fingerprints?project=P` | fingerprints with more than one run, ranked by widest relative metric spread |
+| `GET` | `/fingerprints/{fingerprint}` | one group: per-metric count/min/max/mean/stddev, or `no_repeats` for a lone run |
 | `GET` | `/healthz` | liveness |
 | `GET` | `/readyz` | readiness — the store answers a call |
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
