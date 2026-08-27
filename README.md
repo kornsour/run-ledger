@@ -95,6 +95,8 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/runs/{id}` | one run |
 | `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
 | `GET` | `/healthz` | liveness |
+| `GET` | `/readyz` | readiness — the store answers a call |
+| `GET` | `/metrics` | self-metrics, Prometheus exposition format |
 
 ## Decisions worth knowing
 
@@ -115,6 +117,11 @@ implementation cannot quietly disagree about ordering or idempotency.
   collide, and **params are sorted before hashing** because Go randomizes map
   iteration — without that, the same experiment fingerprints differently between
   runs of the same binary.
+- **`/metrics` is hand-rolled, not built on a client library.** The project ships
+  as one dependency-free binary, and a few counters and a histogram don't
+  justify breaking that. `runledger_runs` is read from the store at scrape
+  time rather than tracked as a local counter, since recording is idempotent
+  and a retried record must not inflate it.
 
 ## Status
 
