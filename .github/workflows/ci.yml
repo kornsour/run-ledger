@@ -10,7 +10,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Self-hosted when CI_RUNNER names a runner, GitHub-hosted otherwise. The
+    # fallback matters: this repo's runner lives in a container on a laptop, and
+    # an unset or wrong variable would otherwise queue the job forever with no
+    # runner able to claim it -- which is exactly what happened to the sibling
+    # lab repos when their Windows runners were deregistered while CI_RUNNER
+    # still named them.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["ubuntu-latest"]') }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
