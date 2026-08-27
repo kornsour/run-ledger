@@ -1,0 +1,25 @@
+# Architecture decision records
+
+This folder records the decisions in run-ledger that a reader is most likely to
+want to overturn, and that are most expensive to overturn silently. Each record
+is short: context, decision, consequences, and what would have to be true to
+revisit it.
+
+The README's ["Decisions worth knowing"](../../README.md#decisions-worth-knowing)
+section is a summary of these; this folder is the account.
+
+## Records
+
+| # | Title | Status |
+|---|---|---|
+| [0001](0001-server-computes-the-fingerprint.md) | The server computes the fingerprint, never the client | Accepted |
+| [0002](0002-unknown-json-fields-are-rejected.md) | Unknown JSON fields are rejected | Accepted |
+| [0003](0003-dirty-tree-without-config-hash-is-refused.md) | A dirty working tree without a config hash is refused | Accepted |
+| [0004](0004-fingerprint-input-is-a-versioned-contract.md) | The fingerprint input is a versioned contract | Accepted |
+
+## Adding a record
+
+Copy the format of an existing record. Number new records sequentially; never
+reuse or renumber. A record that is later reversed gets a new record that
+supersedes it (linked both ways) — existing records are not edited to pretend
+the original reasoning never held.
