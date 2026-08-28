@@ -13,9 +13,11 @@ permissions:
 
 jobs:
   publish:
-    # See ci.yml for why the fallback here matters: self-hosted runner names
-    # going stale must not queue this job forever.
-    runs-on: ${{ fromJSON(vars.CI_RUNNER || '["ubuntu-latest"]') }}
+    # Pins wsl: this job runs a real `docker build`, and only the WSL pool has
+    # a non-nested Docker daemon (the Mac pool's own runners are themselves
+    # Docker containers). See .github-private/docs/CI-RUNNER-ROUTING.md,
+    # "Docker-dependent jobs must pin the WSL pool".
+    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
