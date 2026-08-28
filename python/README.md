@@ -80,17 +80,25 @@ actually ran, including how far it got.
 ## Why one HTTP call, not two
 
 It might look natural for `Run.start()` to record the run as `running`
-immediately, then update it to `succeeded`/`failed` at the end. The ledger's
-API does not support that yet: `POST /runs` is idempotent only for a
-byte-identical re-record of the same run id, and returns a conflict for the
-same id with different content — there is no `PATCH`
-([issue #1](https://github.com/Lurking-Walrus/run-ledger/issues/1)).
+immediately, then update it to `succeeded`/`failed` at the end. The API
+supports that — `PATCH /runs/{id}` exists, and `rlctl start` / `rlctl finish`
+use it. This client deliberately does not.
 
-So this client buffers the run's status and metrics locally for its whole
-lifetime, and writes the ledger exactly once, in `Run.start()`'s `__exit__`,
-once the outcome is known. That is what makes one accurate record per run
-possible against the API as it exists today. `run.run_id` and
-`run.fingerprint` are only populated after that one call completes.
+The obstacle is on the read side, not the write side. `/fingerprints` groups
+every run sharing a fingerprint without filtering on status, so a `running`
+record would count as a *repeat measurement* of that experiment and its
+mid-training metric would join the group's min/max/mean/stddev. A loss
+sampled at step 50 of 10,000 sitting beside a finished run's final loss
+would widen the spread and could rank that fingerprint worst-reproducing —
+reporting "something affecting the result went unrecorded" when the real
+explanation is "one of these has not finished." That is a false positive on
+the ledger's central claim, so this client does not create the condition.
+
+So it buffers the run's status and metrics locally for its whole lifetime,
+and writes the ledger exactly once, in `Run.start()`'s `__exit__`, once the
+outcome is known. `run.run_id` and `run.fingerprint` are only populated
+after that one call completes. See
+[ADR 0005](../docs/adr/0005-python-client-writes-once-at-the-end.md).
 
 ## When the ledger is unreachable
 

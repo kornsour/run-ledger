@@ -11,7 +11,7 @@ dependencies = []
 dev = ["pytest>=7"]
 
 [project.urls]
-Homepage = "https://github.com/Lurking-Walrus/run-ledger"
+Homepage = "https://github.com/kornsour/run-ledger"
 
 [build-system]
 requires = ["setuptools>=68"]

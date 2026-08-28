@@ -2,18 +2,27 @@
 
 Design note -- why this makes exactly one HTTP call, at the end
 -----------------------------------------------------------------
-The server's ``POST /runs`` is idempotent only for a byte-identical
-re-record of the same run id; recording the same id again with different
-content (a different status, new metrics) is a conflict, not an update --
-there is no PATCH yet (github.com/Lurking-Walrus/run-ledger issue #1). So a
-"record running, then update to succeeded/failed" pair of calls would not
-work against the real server today: the second call would fail every time.
+``PATCH /runs/{id}`` exists, so the mechanical obstacle to a "record
+running, then update to succeeded/failed" pair is gone -- ``rlctl start``
+and ``rlctl finish`` do exactly that. This client still does not, on
+purpose, and the reason is analytical rather than mechanical: nothing on
+the read side yet distinguishes a finished run from an in-flight one.
+``/fingerprints`` lists every run sharing a fingerprint without filtering on
+status, so a ``running`` record carrying a mid-training metric would be
+counted as a *repeat measurement* of that experiment. Its half-finished loss
+would widen the group's spread and could rank the fingerprint top of "which
+experiments reproduce worst" -- announcing that something affecting the
+result went unrecorded, when in truth one of the runs simply had not
+finished. That is a false positive on the single claim this ledger exists
+to make.
 
 Instead, ``Run`` buffers the run's status and metrics locally for its whole
 lifetime and writes the ledger exactly once, in ``__exit__``, once the
-outcome is known. That produces one accurate record per run against the
-API as it exists now, and degrading to a spool file (see below) applies to
-that one call.
+outcome is known. That produces one accurate record per run, and degrading
+to a spool file (see below) applies to that one call.
+
+See ADR 0005 for the decision, including the read-side change that would
+make revisiting it safe.
 
 Design note -- never let recording fail the training run
 ----------------------------------------------------------
