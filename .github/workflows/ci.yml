@@ -10,15 +10,17 @@ permissions:
 
 jobs:
   build:
-    # Pinned to the WSL pool specifically, not the bare self-hosted fleet: this
-    # job runs `make image` (a real docker build), and the Mac pool's runners
-    # are themselves Docker containers with no nested Docker available. Landing
-    # there fails with "make: docker: No such file or directory" -- a
-    # structural incompatibility, not a flaky failure. See
-    # Lurking-Walrus/.github-private#82. The fallback to ubuntu-latest matters
-    # too: an unset or false switch must not queue this job forever with no
-    # runner able to claim it.
-    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
+    # GitHub-hosted, and not negotiable while this repo is public: a fork PR
+    # must never execute on self-hosted hardware, and public repos get hosted
+    # minutes free, so there is nothing to trade for.
+    #
+    # This job runs `make image`, a real `docker build`. ubuntu-latest ships a
+    # working Docker daemon, so it needs nothing special -- but that IS a
+    # requirement of the job, not an accident. Any future runner for it must
+    # have a non-nested Docker daemon; a container-based runner fails here with
+    # "make: docker: No such file or directory", which is a structural
+    # incompatibility rather than a flake.
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
@@ -40,9 +42,7 @@ jobs:
         run: make image
 
   python:
-    # No docker in this job, so it isn't pinned to the wsl pool the way
-    # `build` is -- any self-hosted runner in the shared group can take it.
-    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux"]' || '["ubuntu-latest"]') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5

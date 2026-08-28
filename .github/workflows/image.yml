@@ -13,11 +13,10 @@ permissions:
 
 jobs:
   publish:
-    # Pins wsl: this job runs a real `docker build`, and only the WSL pool has
-    # a non-nested Docker daemon (the Mac pool's own runners are themselves
-    # Docker containers). See .github-private/docs/CI-RUNNER-ROUTING.md,
-    # "Docker-dependent jobs must pin the WSL pool".
-    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
+    # GitHub-hosted; see ci.yml's `build` job for the reasoning. This job also
+    # runs a real `docker build` (multi-arch, via buildx + QEMU), so whatever
+    # runs it needs a non-nested Docker daemon.
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
