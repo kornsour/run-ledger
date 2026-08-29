@@ -19,6 +19,7 @@ section is a summary of these; this folder is the account.
 | [0005](0005-python-client-writes-once-at-the-end.md) | The Python client writes the ledger exactly once, at the end of a run | Accepted |
 | [0006](0006-duckdb-store-backend-and-the-cgo-cost.md) | `store.DuckDB` as the durable backend, and accepting cgo to get it | Accepted |
 | [0007](0007-keyset-pagination-cursor-consistency.md) | `GET /runs` paginates by keyset cursor, and a page is consistent with the cursor's position, not a fixed snapshot | Accepted |
+| [0008](0008-replay-raises-quarantines-and-tracks-a-read-offset.md) | `replay_spool()` raises on an unreachable ledger, quarantines permanent rejections, and rewrites the spool by tracked read offset | Accepted |
 
 ## Adding a record
 
