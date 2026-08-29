@@ -24,7 +24,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import runledger  # noqa: E402
-from runledger import run as run_module  # noqa: E402
+from runledger import _run as run_module  # noqa: E402
 
 
 class _Handler(BaseHTTPRequestHandler):

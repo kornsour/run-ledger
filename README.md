@@ -119,7 +119,7 @@ internal/store/    Store interface + in-memory reference and DuckDB backends
 internal/compare/  structured diff, identity vs provenance vs metric
 internal/spread/   per-fingerprint metric spread across repeated runs
 internal/api/      HTTP handlers
-python/runledger/  in-process Python client: `Run.start()` as a context manager
+python/runledger/  Python client: `Run.start()` to record, runs()/spread() to read back
 ```
 
 Every directory here contains code. The store is an interface with a conformance

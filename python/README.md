@@ -108,6 +108,59 @@ $ rlctl show a1b2c3d4e5f6a7b8-abc123
 happened at step 4 did not. That is the point: the ledger records what
 actually ran, including how far it got.
 
+## Reading the ledger back
+
+Recording is half the client. The other half answers the question the ledger
+exists for — *which of my experiments don't reproduce?* — without shelling out
+to `rlctl` or hand-writing the pagination loop.
+
+```python
+import runledger
+
+# Every run in a project, newest first. next_cursor is followed internally.
+for r in runledger.runs(project="demo", status="succeeded"):
+    print(r["run_id"], r["metrics"])
+
+# One run by id.
+r = runledger.run("a1b2c3d4e5f6a7b8-abc123")
+
+# Fingerprints with more than one run, ranked worst-reproducing first.
+for group in runledger.spread(project="demo"):
+    print(group["fingerprint"], group["count"], group["metrics"])
+
+# Or one experiment's own repeats.
+group, = runledger.spread(fingerprint="a1b2c3...")
+```
+
+`runs()` walks every page by default; pass `limit=` to bound it. Both read
+from `$RUNLEDGER_ADDR` and `$RUNLEDGER_TOKEN` the same way `Run.start()` does
+— the token is never a keyword argument, for the same reason it is never an
+`rlctl` flag.
+
+These return plain dicts, straight off the wire. The package still has no
+dependencies; if you want a frame, you have lost nothing:
+
+```python
+import pandas as pd
+df = pd.DataFrame(runledger.runs(project="demo"))
+```
+
+### Reads raise; writes don't
+
+The two halves fail differently, on purpose:
+
+| | on an unreachable ledger |
+|---|---|
+| `Run.start()` | `RuntimeWarning` + spool to disk, never raises |
+| `runs()` / `run()` / `spread()` | raises `LedgerUnreachableError` |
+
+Recording must never fail an expensive training job, so the write path
+degrades. A read has no such constraint, and the opposite default is the
+safe one: silently returning `[]` when the server is down would answer "how
+did my experiments do?" with "they didn't". `RunNotFoundError` (a subclass of
+`LedgerError`, as is `LedgerUnreachableError`) is raised for an unknown run id
+or fingerprint.
+
 ## Why one HTTP call, not two
 
 It might look natural for `Run.start()` to record the run as `running`
