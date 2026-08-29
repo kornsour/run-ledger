@@ -33,12 +33,20 @@ type Run struct {
 
 	// --- provenance: recorded, not hashed ---
 	//
-	// Host, Device, FrameworkVersion, ConfigHash, DatasetVersion, and
-	// ModelVersion share a known gap: an empty string is indistinguishable
-	// from "not recorded," which can misrepresent a run that genuinely ran
-	// with none of these set. Widening them to pointers would ripple into
-	// Compute's hashing and every caller that decodes a lineage.Run from
-	// JSON, which is a bigger, separately-scoped change than this fix.
+	// For Host, Device, FrameworkVersion, ConfigHash, DatasetVersion, and
+	// ModelVersion, an empty string means "not recorded" -- not a value of
+	// its own. None of them has a meaningful empty value (an empty config
+	// hash *is* no config hash; a host always has a name), so the two
+	// spellings a client might send were deliberately collapsed into one
+	// meaning rather than distinguished. See ADR 0011.
+	//
+	// This block previously described that as a known gap and proposed
+	// widening these to pointers. ADR 0011 considered and rejected exactly
+	// that: it would have changed the fingerprint contract for the three
+	// identity fields, and made the fingerprint sensitive to whether a
+	// client serializes an unset key or omits it -- how a client spells
+	// things, rather than what the experimenter chose. Consumers may rely
+	// on "" == absent for these fields; compare.Runs already does.
 	RunID       string `json:"run_id"`
 	Fingerprint string `json:"fingerprint"`
 	// FingerprintVersion records which version of Compute's hashing contract
