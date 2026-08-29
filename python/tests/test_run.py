@@ -2,8 +2,8 @@
 
 Runs against a tiny in-process HTTP server standing in for the real
 `runledger` server, so these don't need Go, a build, or a live process --
-just enough of POST /runs's contract (echo run_id/fingerprint on success) to
-exercise the client honestly.
+just enough of POST /runs and PATCH /runs/{id}'s contract (echo
+run_id/fingerprint on success) to exercise the client honestly.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import shutil
+import signal
 import sys
 import tempfile
 import threading
@@ -28,25 +29,48 @@ from runledger import _run as run_module  # noqa: E402
 
 
 class _Handler(BaseHTTPRequestHandler):
+    """Accepts both halves of the two-phase write: POST /runs (start) and
+    PATCH /runs/{id} (finish). Always succeeds, echoing a fixed run_id/
+    fingerprint the same way for either verb.
+    """
+
     def log_message(self, *args):  # silence the default request logging
         pass
 
-    def do_POST(self):
+    def _read_json(self):
         length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-        payload = json.loads(body.decode("utf-8"))
+        if not length:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def _record(self, method):
         self.server.received.append(
-            {"payload": payload, "authorization": self.headers.get("Authorization")}
+            {
+                "method": method,
+                "path": self.path,
+                "payload": self._read_json(),
+                "authorization": self.headers.get("Authorization"),
+            }
         )
-        self.send_response(201)
+
+    def _respond(self, code, out):
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        out = {"run_id": "fake-run-id", "fingerprint": "fake-fingerprint"}
         self.wfile.write(json.dumps(out).encode("utf-8"))
+
+    def do_POST(self):
+        self._record("POST")
+        self._respond(201, {"run_id": "fake-run-id", "fingerprint": "fake-fingerprint"})
+
+    def do_PATCH(self):
+        self._record("PATCH")
+        run_id = self.path.rsplit("/", 1)[-1]
+        self._respond(200, {"run_id": run_id, "fingerprint": "fake-fingerprint"})
 
 
 class _FakeLedger:
-    """A minimal stand-in for POST /runs, listening on localhost."""
+    """A minimal stand-in for POST /runs and PATCH /runs/{id}, on localhost."""
 
     def __enter__(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
@@ -168,6 +192,10 @@ class SpoolPathTests(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
     def test_warning_names_the_resolved_path(self):
+        # Unreachable for the whole run: both the start POST and the
+        # finish-fallback POST fail, and only the second one spools -- see
+        # RunDegradesGracefullyTests below for that split in detail. Either
+        # warning naming the resolved path satisfies this test.
         home = tempfile.mkdtemp()
         try:
             with mock.patch.dict(os.environ, {"HOME": home}):
@@ -223,36 +251,57 @@ class RunStartValidationTests(unittest.TestCase):
                 project="demo", config_hash="cfg1", server=ledger.addr
             ):
                 pass
-        self.assertEqual(len(ledger.received), 1)
-        self.assertEqual(ledger.received[0]["payload"]["config_hash"], "cfg1")
-        self.assertTrue(ledger.received[0]["payload"]["git_dirty"])
+        self.assertEqual(len(ledger.received), 2, "a start POST and a finish PATCH")
+        start_call = ledger.received[0]
+        self.assertEqual(start_call["method"], "POST")
+        self.assertEqual(start_call["payload"]["config_hash"], "cfg1")
+        self.assertTrue(start_call["payload"]["git_dirty"])
 
 
 class RunRecordingTests(unittest.TestCase):
-    def test_success_records_once_with_final_metrics(self):
+    """Run.start() now writes the ledger twice: POST /runs with status
+    `running` the moment the with-block is entered, and PATCH /runs/{id}
+    with the terminal status and final metrics when it ends.
+    """
+
+    def test_start_posts_running_then_finish_patches_terminal_status(self):
         with _clean_git(), _FakeLedger() as ledger:
             with runledger.Run.start(
                 project="demo", seed=1, params={"lr": 0.001}, server=ledger.addr
             ) as run:
+                # run_id/fingerprint are populated from the start-time POST,
+                # not only once the run finishes.
+                self.assertEqual(run.run_id, "fake-run-id")
+                self.assertEqual(run.fingerprint, "fake-fingerprint")
                 run.log_metric("loss", 0.9)
                 run.log_metric("loss", 0.5)  # overwrites
                 run.log_metric("acc", 0.8)
 
             self.assertEqual(run.status, "succeeded")
-            self.assertEqual(run.run_id, "fake-run-id")
-            self.assertEqual(run.fingerprint, "fake-fingerprint")
             self.assertFalse(run.spooled)
 
-        self.assertEqual(len(ledger.received), 1, "exactly one HTTP call per run")
-        payload = ledger.received[0]["payload"]
-        self.assertEqual(payload["project"], "demo")
-        self.assertEqual(payload["seed"], 1)
-        self.assertEqual(payload["params"], {"lr": "0.001"})
-        self.assertEqual(payload["status"], "succeeded")
-        self.assertEqual(payload["metrics"], {"loss": 0.5, "acc": 0.8})
-        self.assertIn("git_commit", payload)
-        self.assertIn("started_at", payload)
-        self.assertIn("ended_at", payload)
+        self.assertEqual(len(ledger.received), 2, "one POST at start, one PATCH at finish")
+        start_call, finish_call = ledger.received
+
+        self.assertEqual(start_call["method"], "POST")
+        self.assertEqual(start_call["path"], "/v1/runs")
+        self.assertEqual(start_call["payload"]["project"], "demo")
+        self.assertEqual(start_call["payload"]["seed"], 1)
+        self.assertEqual(start_call["payload"]["params"], {"lr": "0.001"})
+        self.assertEqual(start_call["payload"]["status"], "running")
+        self.assertIn("git_commit", start_call["payload"])
+        self.assertIn("started_at", start_call["payload"])
+        self.assertNotIn("metrics", start_call["payload"])
+        self.assertNotIn("ended_at", start_call["payload"])
+
+        self.assertEqual(finish_call["method"], "PATCH")
+        self.assertEqual(finish_call["path"], "/v1/runs/fake-run-id")
+        self.assertEqual(finish_call["payload"]["status"], "succeeded")
+        self.assertEqual(finish_call["payload"]["metrics"], {"loss": 0.5, "acc": 0.8})
+        self.assertIn("ended_at", finish_call["payload"])
+        self.assertNotIn(
+            "project", finish_call["payload"], "PATCH only carries what changed"
+        )
 
     def test_failure_records_failed_with_partial_metrics_and_reraises(self):
         with _clean_git(), _FakeLedger() as ledger:
@@ -263,17 +312,20 @@ class RunRecordingTests(unittest.TestCase):
 
             self.assertEqual(run.status, "failed")
 
-        self.assertEqual(len(ledger.received), 1)
-        payload = ledger.received[0]["payload"]
-        self.assertEqual(payload["status"], "failed")
-        self.assertEqual(payload["metrics"], {"loss": 0.9})
+        self.assertEqual(len(ledger.received), 2)
+        finish_call = ledger.received[1]
+        self.assertEqual(finish_call["method"], "PATCH")
+        self.assertEqual(finish_call["payload"]["status"], "failed")
+        self.assertEqual(finish_call["payload"]["metrics"], {"loss": 0.9})
 
     def test_bearer_token_sent_when_set(self):
         with _clean_git(), _FakeLedger() as ledger:
             with mock.patch.dict(os.environ, {"RUNLEDGER_TOKEN": "s3cr3t"}):
                 with runledger.Run.start(project="demo", server=ledger.addr):
                     pass
-        self.assertEqual(ledger.received[0]["authorization"], "Bearer s3cr3t")
+        self.assertTrue(ledger.received)
+        for call in ledger.received:
+            self.assertEqual(call["authorization"], "Bearer s3cr3t")
 
     def test_no_token_means_no_authorization_header(self):
         with _clean_git(), _FakeLedger() as ledger:
@@ -282,11 +334,13 @@ class RunRecordingTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 with runledger.Run.start(project="demo", server=ledger.addr):
                     pass
-        self.assertIsNone(ledger.received[0]["authorization"])
+        self.assertTrue(ledger.received)
+        for call in ledger.received:
+            self.assertIsNone(call["authorization"])
 
 
 class RunDegradesGracefullyTests(unittest.TestCase):
-    """Never let recording fail the training run."""
+    """Never let recording fail the training run -- for either write."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -297,7 +351,10 @@ class RunDegradesGracefullyTests(unittest.TestCase):
 
     def test_unreachable_server_warns_and_spools_instead_of_raising(self):
         # Nothing is listening on this port: connection should be refused
-        # promptly rather than hang.
+        # promptly rather than hang. Unreachable for the whole run, so both
+        # the start POST and the finish-fallback POST fail -- and only the
+        # second spools (see test_start_write_failure_does_not_spool below
+        # for that distinction in isolation).
         unreachable = "http://127.0.0.1:1"
         with _clean_git():
             with warnings.catch_warnings(record=True) as caught:
@@ -312,7 +369,7 @@ class RunDegradesGracefullyTests(unittest.TestCase):
                 # no exception escaped the with-block
 
         self.assertTrue(run.spooled)
-        self.assertIsNone(run.run_id)
+        self.assertIsNone(run.run_id, "the start write never landed either")
         self.assertTrue(
             any(issubclass(w.category, RuntimeWarning) for w in caught),
             "expected a RuntimeWarning about the unreachable ledger",
@@ -321,7 +378,9 @@ class RunDegradesGracefullyTests(unittest.TestCase):
         self.assertTrue(os.path.exists(self.spool_path))
         with open(self.spool_path, encoding="utf-8") as fh:
             lines = [json.loads(line) for line in fh if line.strip()]
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            len(lines), 1, "the failed start write must not also spool a line"
+        )
         self.assertEqual(lines[0]["project"], "demo")
         self.assertEqual(lines[0]["status"], "succeeded")
         self.assertEqual(lines[0]["metrics"], {"loss": 0.42})
@@ -355,6 +414,247 @@ class RunDegradesGracefullyTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_start_write_failure_does_not_raise_and_finish_recovers_if_ledger_returns(self):
+        """The end-of-run write when the start-time write failed.
+
+        Distinct from total unreachability above: here the ledger rejects
+        only the `running` POST and accepts everything else, modelling a
+        ledger that came back (or was merely flaky) by the time the run
+        ended. `_finish()` must notice there is no run_id and fall back to
+        one full POST -- not a PATCH against an id it never learned -- and
+        that fallback succeeding means nothing gets spooled.
+        """
+
+        class _RejectRunningHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                self.server.received.append(payload)
+                if payload.get("status") == "running":
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"simulated start failure"}')
+                    return
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                out = {"run_id": "fallback-run-id", "fingerprint": "fake-fingerprint"}
+                self.wfile.write(json.dumps(out).encode("utf-8"))
+
+            def do_PATCH(self):
+                # Must never be reached: with no run_id from a successful
+                # start write, _finish() has to fall back to a full POST.
+                self.send_response(500)
+                self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _RejectRunningHandler)
+        server.received = []
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            addr = f"http://127.0.0.1:{server.server_port}"
+            with _clean_git():
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    with runledger.Run.start(
+                        project="demo", server=addr, timeout=2.0
+                    ) as run:
+                        self.assertIsNone(run.run_id, "the start write failed")
+                        run.log_metric("loss", 0.1)
+                    # no exception escaped the with-block
+
+            self.assertEqual(run.status, "succeeded")
+            self.assertEqual(run.run_id, "fallback-run-id")
+            self.assertFalse(
+                run.spooled, "the fallback POST succeeded; nothing to spool"
+            )
+            self.assertEqual(len(server.received), 2)
+            self.assertEqual(server.received[0]["status"], "running")
+            self.assertEqual(server.received[1]["status"], "succeeded")
+            self.assertEqual(server.received[1]["metrics"], {"loss": 0.1})
+            self.assertTrue(
+                any(issubclass(w.category, RuntimeWarning) for w in caught),
+                "the failed start write should still warn",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_patch_failure_after_successful_start_spools_the_full_record(self):
+        """The opposite split: the start POST succeeds (a run_id exists on
+        the server), but the closing PATCH cannot be delivered. Replay only
+        understands full POST /runs bodies (ADR 0008), so the fallback
+        spools the complete record rather than the patch -- on replay this
+        creates a second, terminal row instead of resurrecting the
+        original run_id, leaving that one permanently `running` (ADR 0014).
+        """
+
+        class _PatchAlwaysFailsHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length)
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                out = {"run_id": "orphan-run-id", "fingerprint": "fake-fingerprint"}
+                self.wfile.write(json.dumps(out).encode("utf-8"))
+
+            def do_PATCH(self):
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length)
+                self.send_response(500)
+                self.end_headers()
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _PatchAlwaysFailsHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            addr = f"http://127.0.0.1:{server.server_port}"
+            with _clean_git():
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    with runledger.Run.start(
+                        project="demo",
+                        server=addr,
+                        timeout=2.0,
+                        spool_path=self.spool_path,
+                    ) as run:
+                        self.assertEqual(run.run_id, "orphan-run-id")
+                        run.log_metric("loss", 0.2)
+
+            self.assertTrue(run.spooled)
+            with open(self.spool_path, encoding="utf-8") as fh:
+                lines = [json.loads(line) for line in fh if line.strip()]
+            self.assertEqual(len(lines), 1)
+            self.assertEqual(lines[0]["status"], "succeeded")
+            self.assertEqual(lines[0]["metrics"], {"loss": 0.2})
+            self.assertIn(
+                "project", lines[0], "a full record was spooled, not a bare patch"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+
+class SignalHandlingTests(unittest.TestCase):
+    """SIGTERM is the signal a real scheduler sends before escalating to
+    SIGKILL (Slurm's scancel, a Kubernetes eviction, LSF's bkill all work
+    this way). This client catches it -- main thread only, since Python
+    forbids installing a handler anywhere else -- records the active run,
+    and then either chains to whatever handler was already there or lets
+    the process die from the signal itself.
+    """
+
+    def setUp(self):
+        self._original_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def tearDown(self):
+        # Belt and suspenders: _finish()/_unregister_hooks should already
+        # have restored this once every active run finishes, but a failed
+        # assertion mid-test must not leak a handler into later tests.
+        signal.signal(signal.SIGTERM, self._original_sigterm)
+
+    def test_sigterm_records_the_run_as_failed(self):
+        chained = []
+
+        def previous_handler(signum, frame):
+            # A benign stand-in for whatever was installed before
+            # Run.start() ran -- it does not kill the process, so this
+            # test process survives to make its assertions.
+            chained.append(signum)
+
+        signal.signal(signal.SIGTERM, previous_handler)
+
+        with _clean_git(), _FakeLedger() as ledger:
+            with runledger.Run.start(project="demo", server=ledger.addr) as run:
+                run.log_metric("loss", 0.7)
+                signal.raise_signal(signal.SIGTERM)
+                # previous_handler doesn't terminate the process, so
+                # execution resumes here -- but the run is already
+                # finished, recorded by the signal handler above.
+                self.assertEqual(run.status, "failed")
+
+            # Falling off the end of the with-block normally would record
+            # `succeeded` -- it must not overwrite what the signal already
+            # recorded.
+            self.assertEqual(run.status, "failed")
+
+        self.assertEqual(
+            chained, [signal.SIGTERM], "the previously-installed handler must still run"
+        )
+        self.assertEqual(len(ledger.received), 2)
+        finish_call = ledger.received[1]
+        self.assertEqual(finish_call["method"], "PATCH")
+        self.assertEqual(finish_call["payload"]["status"], "failed")
+        self.assertEqual(finish_call["payload"]["metrics"], {"loss": 0.7})
+
+    def test_signal_handler_chains_to_a_preexisting_handler_instead_of_dropping_it(self):
+        calls = []
+
+        def previous_handler(signum, frame):
+            calls.append(signum)
+
+        signal.signal(signal.SIGTERM, previous_handler)
+
+        # The ledger address doesn't matter for this test -- it's about
+        # whether the pre-existing handler still runs, not what got
+        # recorded -- so an unreachable address (fast to fail) keeps it
+        # quick, with the resulting warning silenced.
+        with _clean_git():
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                with runledger.Run.start(
+                    project="demo", server="http://127.0.0.1:1", timeout=1.0
+                ):
+                    signal.raise_signal(signal.SIGTERM)
+
+        self.assertEqual(
+            calls,
+            [signal.SIGTERM],
+            "chaining must invoke the pre-existing handler exactly once, not drop it",
+        )
+        self.assertIs(
+            signal.getsignal(signal.SIGTERM),
+            previous_handler,
+            "the pre-existing handler must be restored once the run finishes",
+        )
+
+    def test_run_started_off_the_main_thread_does_not_install_a_handler(self):
+        # signal.signal() raises ValueError anywhere but the main thread;
+        # Run.start() must not let that escape into the caller's training
+        # code, and must not leave the process's SIGTERM disposition
+        # touched by a run it can't actually protect with one.
+        original = signal.getsignal(signal.SIGTERM)
+        errors = []
+
+        def worker():
+            try:
+                with _clean_git(), _FakeLedger() as ledger:
+                    with runledger.Run.start(project="demo", server=ledger.addr):
+                        pass
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join(timeout=10)
+
+        self.assertFalse(errors, f"Run.start() must not raise off the main thread: {errors}")
+        self.assertIs(
+            signal.getsignal(signal.SIGTERM),
+            original,
+            "no handler should leak from a non-main-thread run",
+        )
 
 
 if __name__ == "__main__":

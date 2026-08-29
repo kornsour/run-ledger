@@ -21,8 +21,19 @@ import runledger
 with runledger.Run.start(project="demo", seed=1, params={"lr": 3e-4}) as run:
     for step in range(steps):
         loss = train_step()
-        run.log_metric("loss", loss)
+        run.log_metric("loss", loss)  # overwrites -- only the final value is kept
 ```
+
+**This is not a metric tracker.** `Run` stores what a run **was** — identity
+plus a final outcome, for deciding whether two runs were the same
+experiment — not how a run **went**. `log_metric` overwrites, so calling it
+every step, as above, is fine to write but does not build a curve; the
+record keeps whichever call happened last for each name. If you want the
+curve, log it to a tracker (W&B, MLflow, TensorBoard) the same step you call
+`log_metric` here — most training setups want both, and they answer
+different questions: a metric belongs in the fingerprint's neighborhood only
+if it is the final number you'd use to decide whether this run reproduced;
+everything you want to watch move over time belongs on a dashboard instead.
 
 > **Run this from inside a git checkout.** `Run.start()` captures the commit
 > before the `with` body runs and raises `runledger.NoGitCommitError` if there
@@ -61,13 +72,17 @@ The first six are **identity** — they are hashed into the run's fingerprint.
 The last three configure the client and are not recorded in the ledger. The
 names match the wire schema and `rlctl`'s flags exactly.
 
-`run.log_metric(name, value)` records a measured metric as training
-progresses. Nothing is sent to the ledger yet — see below.
+`run.log_metric(name, value)` records a measured metric locally as training
+progresses; it is not sent to the ledger until the run ends.
 
-On a normal exit, the run is recorded `succeeded`. On an exception, it is
-recorded `failed`, with whatever metrics were logged before the exception,
-and the exception is re-raised unchanged — `Run.start()` never swallows your
-training script's own errors.
+`Run.start()` records the run twice: `running` the moment the `with` block
+is entered, and its outcome when the block ends. On a normal exit, that's
+`succeeded`. On an exception, it's `failed`, with whatever metrics were
+logged before the exception, and the exception is re-raised unchanged —
+`Run.start()` never swallows your training script's own errors. A `SIGTERM`
+partway through is recorded `failed` the same way, and a `SIGKILL` or an OOM
+kill — which nothing can catch — still leaves the `running` record behind.
+See ["Surviving a kill"](#surviving-a-kill) below.
 
 ### The honest example
 
@@ -209,38 +224,73 @@ did my experiments do?" with "they didn't". `RunNotFoundError` (a subclass of
 id or fingerprint — `compare()` names which side, `a` or `b`, when it is the
 one that doesn't exist.
 
-## Why one HTTP call, not two
+## Surviving a kill
 
-It might look natural for `Run.start()` to record the run as `running`
-immediately, then update it to `succeeded`/`failed` at the end. The API
-supports that — `PATCH /v1/runs/{id}` exists, and `rlctl start` / `rlctl finish`
-use it. This client deliberately does not.
+`SIGKILL`, the OOM killer, and a scheduler's hard timeout all end a process
+without running any Python cleanup code — no `except`, no `finally`, no
+`__exit__`. A training job killed that way used to leave *zero* trace in the
+ledger: not a `failed` record, not a spooled line, nothing, because
+`Run.start()` wrote the ledger only once, from `__exit__`, when the outcome
+was already known.
 
-The obstacle is on the read side, not the write side. `/v1/fingerprints` groups
-every run sharing a fingerprint without filtering on status, so a `running`
-record would count as a *repeat measurement* of that experiment and its
-mid-training metric would join the group's min/max/mean/stddev. A loss
-sampled at step 50 of 10,000 sitting beside a finished run's final loss
-would widen the spread and could rank that fingerprint worst-reproducing —
-reporting "something affecting the result went unrecorded" when the real
-explanation is "one of these has not finished." That is a false positive on
-the ledger's central claim, so this client does not create the condition.
+It no longer does. `Run.start()` now `POST`s a `running` record the moment
+the `with` block is entered — before any training happens — and `PATCH`es it
+to `succeeded`/`failed` when the block ends. `run.run_id` and
+`run.fingerprint` are populated right away, from that first call, not only
+at the end.
 
-So it buffers the run's status and metrics locally for its whole lifetime,
-and writes the ledger exactly once, in `Run.start()`'s `__exit__`, once the
-outcome is known. `run.run_id` and `run.fingerprint` are only populated
-after that one call completes. See
-[ADR 0005](../docs/adr/0005-python-client-writes-once-at-the-end.md).
+That means:
+
+- **`SIGKILL` / OOM / a hard scheduler timeout**: uncatchable by
+  construction, so nothing here can record the outcome. But the `running`
+  record from the start of the run is already on the server, so the run
+  isn't invisible — `rlctl list --status running` (or
+  `runledger.runs(status="running")`) shows it, with accurate identity and
+  provenance and no terminal status, for someone reconstructing what died.
+- **`SIGTERM`**: what almost every real scheduler sends *before* escalating
+  to `SIGKILL`. This client catches it (main thread only — Python does not
+  allow installing a signal handler anywhere else) and records the run
+  `failed` with whatever metrics were logged so far, then lets the process
+  die from the signal exactly as it would have otherwise — the handler
+  never turns a kill into a clean exit, and it chains to any handler your
+  own code already installed rather than replacing it.
+- **An exception inside the `with` body**: unchanged — recorded `failed`,
+  re-raised unchanged.
+
+Why this is safe now, when it wasn't before: `/v1/fingerprints` used to
+group every run sharing a fingerprint without filtering on status, so a
+`running` record's mid-training metric would be counted as a repeat
+measurement and could rank that fingerprint worst-reproducing — a false
+positive on the ledger's central claim. That is why this client used to
+write once, at the end (ADR 0005). The server now excludes non-terminal
+runs from `spread` before that comparison ever happens, so a `running`
+record sitting on the server no longer distorts anything it's read back
+into. See [ADR 0014](../docs/adr/0014-python-client-writes-running-then-patches-terminal.md)
+for the full reasoning, including what the closing `PATCH` does when the
+opening `POST` never landed.
 
 ## When the ledger is unreachable
 
-Recording must never fail the training run. If the final write can't reach
-the server — connection refused, timed out, DNS failure, a bad response — the
-client emits a `RuntimeWarning` and appends the run record as one JSON line
-to a local spool file (`~/.runledger/spool.jsonl` by default, or
-`spool_path=` on `Run.start()`) instead of raising. `run.spooled` is `True`
-when that happened, and `run.resolved_spool_path()` is the file it actually
-wrote — `spool_path` keeps whatever you passed, `~` and all.
+Recording must never fail the training run. If either write can't reach the
+server — connection refused, timed out, DNS failure, a bad response — the
+client emits a `RuntimeWarning` rather than raising. What happens next
+depends on which write failed:
+
+- The **start-time write** failing does not spool anything: a `running`
+  record with nothing to ever follow it up would sit in the spool forever,
+  and there's no terminal status or final metrics to give it yet anyway.
+  The run still gets recorded normally if the ledger comes back before it
+  ends — see the next point.
+- The **end-of-run write** failing spools the complete run record as one
+  JSON line to a local spool file (`~/.runledger/spool.jsonl` by default, or
+  `spool_path=` on `Run.start()`). This is the only path that sets
+  `run.spooled = True`; `run.resolved_spool_path()` is the file it actually
+  wrote — `spool_path` keeps whatever you passed, `~` and all. If the
+  start-time write had already succeeded, replaying this spool line later
+  creates a *second*, terminal row rather than resurrecting the original
+  run — the original is left behind, permanently `running`. That row is
+  never counted in `spread` (the server excludes non-terminal runs), so the
+  cost is a little clutter in `rlctl list`, not a wrong verdict.
 
 ### Replaying a spool
 
@@ -295,6 +345,43 @@ are captured automatically — `framework_version` becomes e.g. `"torch
 2.4.0"`, and `device` becomes the CUDA device name or JAX device string.
 Neither is required; a run with neither installed records `device="cpu"`
 and an empty `framework_version`.
+
+## Deriving `dataset_version`
+
+`dataset_version` is a free string — the server hashes it into the
+fingerprint exactly as given and has no way to check that two runs labelled
+the same string actually saw the same bytes (see the root README's note on
+what that costs the `unattributable` verdict). `hash_dataset()` lets a
+caller who wants the label to mean something derive it from the data
+instead of typing it:
+
+```python
+import runledger
+
+digest = runledger.hash_dataset("data/train")  # hex sha256, deterministic
+
+with runledger.Run.start(project="demo", seed=1, dataset_version=digest) as run:
+    ...
+```
+
+It hashes a manifest of `(relative path, size, content digest)` per file,
+sorted by path — so the result does not depend on directory listing order,
+the machine it runs on, or where the tree happens to live on disk.
+Deliberately excluded: absolute paths, mtimes, and permissions, none of
+which are the data and all of which change on a plain copy or checkout
+without the bytes changing. An empty directory hashes to a fixed, defined
+value rather than raising; a missing path raises `FileNotFoundError`; a
+symlink anywhere in the tree raises `SymlinkNotSupportedError` rather than
+guessing whether the manifest should describe the link or whatever it
+currently resolves to. Files are hashed streaming, in chunks (`chunk_size=`,
+default 1 MiB), so a multi-gigabyte file never has to fit in memory at once.
+
+This is entirely client-side and opt-in: the server goes on storing
+whatever string it is given as `dataset_version`, unchanged. Nothing about
+the wire schema or the fingerprint contract
+([ADR 0004](../docs/adr/0004-fingerprint-input-is-a-versioned-contract.md))
+is affected — `hash_dataset()` just gives a caller a principled way to
+produce that string instead of typing `"v1"` by hand.
 
 ## Reference
 

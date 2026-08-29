@@ -5,6 +5,14 @@
 // how much the measured result actually moved. That number is a project's
 // reproducibility floor: it is what tells you whether a later improvement is
 // real or inside the noise these repeats already show.
+//
+// A run that has not finished (lineage.Terminal reports false) is excluded
+// from that summary: its metrics are whatever happened to be logged
+// mid-training, not a finished measurement, and letting one in would widen
+// a group's spread with a number that has nothing to do with reproducing
+// the experiment. See ADR 0012. One and Compute both take runs of any
+// status and do this filtering themselves -- see One's doc comment for why
+// the filtering lives there rather than in each caller.
 package spread
 
 import (
@@ -37,14 +45,27 @@ type ProvenanceDiff struct {
 }
 
 // Group is the spread summary for every recorded run of one fingerprint.
+//
+// RunIDs, Count, NoRepeats, Metrics, and Provenance all describe only the
+// group's terminal runs -- a run still in flight has no finished
+// measurement to contribute. InFlight is where those excluded runs are
+// not silently dropped: a fingerprint with three finished runs and one
+// still running reports Count 3, InFlight 1, not a group of three that
+// looks like no fourth run exists.
 type Group struct {
 	Fingerprint string   `json:"fingerprint"`
 	RunIDs      []string `json:"run_ids"`
 	Count       int      `json:"count"`
-	// NoRepeats is true when exactly one run has this fingerprint. Metrics is
-	// left empty rather than reporting a standard deviation of zero, which
-	// would claim a reproducibility this group was never asked to show.
-	NoRepeats  bool                  `json:"no_repeats"`
+	// NoRepeats is true when fewer than two terminal runs have this
+	// fingerprint. Metrics is left empty rather than reporting a standard
+	// deviation of zero, which would claim a reproducibility this group was
+	// never asked to show.
+	NoRepeats bool `json:"no_repeats"`
+	// InFlight is how many of this fingerprint's runs are not yet terminal
+	// (lineage.Terminal is false: created or running). It is a count, not a
+	// list of run IDs -- the group has nothing to say about an unfinished
+	// run beyond the fact that it exists and has not been measured yet.
+	InFlight   int                   `json:"in_flight"`
 	Metrics    map[string]MetricStat `json:"metrics,omitempty"`
 	Provenance []ProvenanceDiff      `json:"provenance,omitempty"`
 }
@@ -102,7 +123,9 @@ var provenanceFields = []struct {
 }
 
 // Compute groups runs by fingerprint and summarizes each group. runs need
-// not already be grouped, sorted, or limited to one fingerprint or project.
+// not already be grouped, sorted, or limited to one fingerprint, project, or
+// status -- status filtering happens once, inside One, so a caller cannot
+// forget it for one of the two entry points and not the other.
 func Compute(runs []lineage.Run) []Group {
 	byFP := map[string][]lineage.Run{}
 	var order []string
@@ -119,24 +142,40 @@ func Compute(runs []lineage.Run) []Group {
 	return groups
 }
 
-// One summarizes a single fingerprint's runs. It is exported separately from
-// Compute so GET /fingerprints/{fingerprint} -- which already has exactly the
-// runs of one group, via Store.List(Query{Fingerprint: fp}) -- does not need
-// to re-derive the grouping Compute exists to do over a wider listing.
+// One summarizes a single fingerprint's runs, of any status. It is exported
+// separately from Compute so GET /fingerprints/{fingerprint} -- which
+// already has exactly the runs of one group, via
+// Store.List(Query{Fingerprint: fp}) -- does not need to re-derive the
+// grouping Compute exists to do over a wider listing.
+//
+// The terminal/in-flight split happens here rather than in each caller so
+// GET /fingerprints and GET /fingerprints/{fingerprint} cannot drift apart
+// on it: Compute calls this per group, so both endpoints run the exact same
+// filter by construction, not by two call sites happening to agree today.
 func One(fingerprint string, runs []lineage.Run) Group {
-	ids := make([]string, len(runs))
-	for i, r := range runs {
+	var terminal []lineage.Run
+	inFlight := 0
+	for _, r := range runs {
+		if lineage.Terminal(r.Status) {
+			terminal = append(terminal, r)
+		} else {
+			inFlight++
+		}
+	}
+
+	ids := make([]string, len(terminal))
+	for i, r := range terminal {
 		ids[i] = r.RunID
 	}
 	sort.Strings(ids)
 
-	g := Group{Fingerprint: fingerprint, RunIDs: ids, Count: len(runs)}
-	if len(runs) < 2 {
+	g := Group{Fingerprint: fingerprint, RunIDs: ids, Count: len(terminal), InFlight: inFlight}
+	if len(terminal) < 2 {
 		g.NoRepeats = true
 		return g
 	}
-	g.Metrics = metricStats(runs)
-	g.Provenance = provenanceDiffs(runs)
+	g.Metrics = metricStats(terminal)
+	g.Provenance = provenanceDiffs(terminal)
 	return g
 }
 
