@@ -142,9 +142,14 @@ implementation cannot quietly disagree about ordering or idempotency.
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
 
 The full contract, including request/response schemas, lives in
-[`docs/openapi.yaml`](docs/openapi.yaml) — keep it in sync with `internal/api`
-when routes or fields change. An interactive reference rendered straight from
-that file, no separate artifact to keep in sync, is published at
+[`docs/openapi.yaml`](docs/openapi.yaml). It has to stay in sync with
+`internal/api` by hand, but not silently: `TestRoutesMatchSpec` and
+`TestSchemasMatchGoTypes` in
+[`internal/api/spec_test.go`](internal/api/spec_test.go) check the spec's
+routes and request/response field names against the actual Go types on
+every `go test ./...`, so CI fails a PR that lets the two drift apart. An
+interactive reference rendered straight from the spec, no separate artifact
+to keep in sync, is published at
 **https://kornsour.github.io/run-ledger/** via GitHub Pages ([`docs/index.html`](docs/index.html));
 it updates the moment a change to the spec lands on `main`, since Pages just
 serves whatever is currently in `docs/`. The spec is also a valid import for

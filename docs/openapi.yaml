@@ -394,6 +394,13 @@ components:
         run_id:
           type: string
           description: Usually left unset; the server assigns one from the fingerprint.
+        fingerprint:
+          type: string
+          description: >
+            Accepted but ignored: the decoder does not reject this field, and
+            the server always overwrites it with the identity fields' own
+            computed hash. There is no way to assert a fingerprint from the
+            client.
         host:
           type: string
         device:

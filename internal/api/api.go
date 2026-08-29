@@ -117,28 +117,47 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 	return srv
 }
 
+// route is one entry in the server's route table: the exact pattern
+// ServeMux registers it under (e.g. "POST /runs"), paired with its handler.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes is the server's route table -- the single source of truth for what
+// this server serves. Handler builds the mux from it, and spec_test.go
+// checks it against docs/openapi.yaml, so an endpoint added or removed here
+// without a matching spec change fails CI rather than shipping undocumented.
+func (s *Server) routes() []route {
+	return []route{
+		{"POST /runs", s.requireAuth(true, s.record)},
+		{"PATCH /runs/{id}", s.requireAuth(true, s.update)},
+		{"GET /runs", s.requireAuth(false, s.list)},
+		{"GET /runs/{id}", s.requireAuth(false, s.get)},
+		{"GET /compare", s.requireAuth(false, s.compare)},
+		{"GET /fingerprints", s.requireAuth(false, s.spreadList)},
+		{"GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
+		// /healthz stays unauthenticated so a liveness probe does not need a
+		// credential.
+		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+		}},
+		// Ready means the store answers a call, not just that the process is
+		// up. That distinction is a no-op today -- the only backend is
+		// in-memory -- but becomes real once the store is out of process.
+		{"GET /readyz", s.readyz},
+		{"GET /metrics", s.serveMetrics},
+	}
+}
+
 // Handler returns the routed mux, wrapped in request-scoped logging,
 // duration/metrics instrumentation, and panic recovery.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /runs", s.requireAuth(true, s.record))
-	mux.HandleFunc("PATCH /runs/{id}", s.requireAuth(true, s.update))
-	mux.HandleFunc("GET /runs", s.requireAuth(false, s.list))
-	mux.HandleFunc("GET /runs/{id}", s.requireAuth(false, s.get))
-	mux.HandleFunc("GET /compare", s.requireAuth(false, s.compare))
-	mux.HandleFunc("GET /fingerprints", s.requireAuth(false, s.spreadList))
-	mux.HandleFunc("GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne))
-	// /healthz stays unauthenticated so a liveness probe does not need a
-	// credential.
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-	// Ready means the store answers a call, not just that the process is
-	// up. That distinction is a no-op today -- the only backend is
-	// in-memory -- but becomes real once the store is out of process.
-	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET /metrics", s.serveMetrics)
+	for _, rt := range s.routes() {
+		mux.HandleFunc(rt.pattern, rt.handler)
+	}
 	return s.instrument(mux)
 }
 
