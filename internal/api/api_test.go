@@ -454,8 +454,38 @@ func TestReadTokenCannotWrite(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer read-secret")
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("a read token must not be able to write, got %d: %s", w.Code, w.Body)
+	// The token is valid, just scoped to reads -- that's a 403 (scope
+	// denial), not a 401 (invalid credentials) that would invite the client
+	// to retry forever with the same token.
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a read token must not be able to write, want 403, got %d: %s", w.Code, w.Body)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != "" {
+		t.Fatalf("a scope denial is not a request for different credentials, want no WWW-Authenticate, got %q", got)
+	}
+}
+
+func TestMissingOrGarbageTokenIs401WithChallenge(t *testing.T) {
+	h := srvWithAuth(t, Auth{WriteToken: "write-secret", ReadToken: "read-secret"})
+
+	for _, token := range []string{"", "garbage"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, authed(http.MethodGet, "/runs", token))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("token %q against a read endpoint: want 401, got %d: %s", token, w.Code, w.Body)
+		}
+		if got := w.Header().Get("WWW-Authenticate"); got == "" {
+			t.Fatalf("token %q: want a WWW-Authenticate challenge on 401, got none", token)
+		}
+
+		w = httptest.NewRecorder()
+		h.ServeHTTP(w, authed(http.MethodPost, "/runs", token))
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("token %q against a write endpoint: want 401, got %d: %s", token, w.Code, w.Body)
+		}
+		if got := w.Header().Get("WWW-Authenticate"); got == "" {
+			t.Fatalf("token %q: want a WWW-Authenticate challenge on 401, got none", token)
+		}
 	}
 }
 
@@ -824,8 +854,10 @@ func TestUpdateRequiresWriteToken(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer read-secret")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("a read token must not be able to PATCH, got %d: %s", w.Code, w.Body)
+	// A recognized token missing write scope is a 403, not a 401 -- see
+	// TestReadTokenCannotWrite.
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a read token must not be able to PATCH, want 403, got %d: %s", w.Code, w.Body)
 	}
 }
 

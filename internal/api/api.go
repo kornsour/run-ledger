@@ -241,12 +241,20 @@ func (s *Server) requireAuth(write bool, next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		token, ok := bearerToken(r)
-		if !ok || !s.auth.allows(write, token) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
-			writeErr(w, http.StatusUnauthorized, "unauthenticated", errors.New("missing or invalid bearer token"))
+		if ok && s.auth.allows(write, token) {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if ok && write && s.auth.allows(false, token) {
+			// The token is real -- it just doesn't carry write scope. That is
+			// an authorization failure, not an authentication one: retrying
+			// with the same token will never succeed, so this must not carry
+			// WWW-Authenticate, which invites exactly that retry.
+			writeErr(w, http.StatusForbidden, "forbidden", errors.New("read-only token cannot write"))
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
+		writeErr(w, http.StatusUnauthorized, "unauthenticated", errors.New("missing or invalid bearer token"))
 	}
 }
 
