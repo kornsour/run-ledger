@@ -1,11 +1,17 @@
 """Tests for runledger._provenance.device_name().
 
 ADR 0011 makes "" mean "not recorded" for the scalar provenance fields, and
-device_name() is the one function that had not caught up: it returned the
-literal "cpu" whether or not any library was actually asked. These tests
-pin the two cases apart -- neither library importable ("") vs. torch
-imported and reporting no CUDA device ("cpu") -- using sys.modules
-substitution so the suite doesn't need torch or jax installed.
+device_name() is the function that had not caught up: it returned the
+literal "cpu" whether or not any library was actually asked, and -- one
+level deeper -- whether or not a library that did import ever managed to
+answer. A CUDA driver/runtime mismatch is a real case where
+`torch.cuda.is_available()` or `get_device_name()` raises instead of
+returning; that must read as "no answer", the same as torch not importing
+at all, not as a fabricated "cpu" on a machine that may well have a GPU.
+
+These tests use sys.modules substitution and MagicMock stand-ins so the
+suite doesn't need torch or jax installed, and doesn't depend on the
+machine it runs on actually having (or lacking) a GPU.
 """
 
 from __future__ import annotations
@@ -70,6 +76,48 @@ class DeviceNameTests(unittest.TestCase):
             "jax"
         ):
             self.assertEqual(_provenance.device_name(), "NVIDIA H100")
+
+    def test_is_available_raising_is_not_reported_as_cpu(self):
+        # A CUDA driver/runtime mismatch makes is_available() raise on a
+        # real GPU machine. That is a failed query, not an answer of "no
+        # device" -- reporting "cpu" here would be the exact fabrication
+        # the issue is about, just one level deeper than a missing import.
+        fake_torch = mock.MagicMock()
+        fake_torch.cuda.is_available.side_effect = RuntimeError(
+            "CUDA driver/runtime version mismatch"
+        )
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}), _unimportable(
+            "jax"
+        ):
+            self.assertEqual(_provenance.device_name(), "")
+
+    def test_get_device_name_raising_after_is_available_true_is_not_cpu(self):
+        # is_available() answered True (a device exists), but the follow-up
+        # query to name it raised -- also a failed query, and also not
+        # grounds to fall back to "cpu": there is a device, it's simply
+        # unnamed, so nothing licenses "cpu" as the answer either.
+        fake_torch = mock.MagicMock()
+        fake_torch.cuda.is_available.return_value = True
+        fake_torch.cuda.get_device_name.side_effect = RuntimeError(
+            "CUDA error: no kernel image is available for execution"
+        )
+        with mock.patch.dict(sys.modules, {"torch": fake_torch}), _unimportable(
+            "jax"
+        ):
+            self.assertEqual(_provenance.device_name(), "")
+
+    def test_torch_query_failure_falls_through_to_a_working_jax(self):
+        # torch importing but failing to answer shouldn't block jax from
+        # being asked -- the two libraries are independent sources, and a
+        # failed torch query is not evidence about what jax would say.
+        fake_torch = mock.MagicMock()
+        fake_torch.cuda.is_available.side_effect = RuntimeError("driver mismatch")
+        fake_jax = mock.MagicMock()
+        fake_jax.devices.return_value = ["TPU v4"]
+        with mock.patch.dict(
+            sys.modules, {"torch": fake_torch, "jax": fake_jax}
+        ):
+            self.assertEqual(_provenance.device_name(), "TPU v4")
 
 
 if __name__ == "__main__":
