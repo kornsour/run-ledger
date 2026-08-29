@@ -124,36 +124,40 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 	return srv
 }
 
-// route pairs one registered method+pattern with its handler. routes is the
-// single source of truth Handler builds the mux from; unmatched (below)
-// walks the same table to tell "no such path" apart from "wrong method for
-// this path" once the mux itself has failed to find a specific match.
+// route is one entry in the server's route table: the exact pattern
+// ServeMux registers it under (e.g. "POST /runs"), paired with its handler.
+// unmatched (below) walks this same table to tell "no such path" apart from
+// "wrong method for this path" once the mux itself has failed to find a
+// specific match.
 type route struct {
-	method  string
 	pattern string
 	handler http.HandlerFunc
 }
 
+// routes is the server's route table -- the single source of truth for what
+// this server serves. Handler builds the mux from it, and spec_test.go
+// checks it against docs/openapi.yaml, so an endpoint added or removed here
+// without a matching spec change fails CI rather than shipping undocumented.
 func (s *Server) routes() []route {
 	return []route{
-		{http.MethodPost, "/runs", s.requireAuth(true, s.record)},
-		{http.MethodPatch, "/runs/{id}", s.requireAuth(true, s.update)},
-		{http.MethodGet, "/runs", s.requireAuth(false, s.list)},
-		{http.MethodGet, "/runs/{id}", s.requireAuth(false, s.get)},
-		{http.MethodGet, "/compare", s.requireAuth(false, s.compare)},
-		{http.MethodGet, "/fingerprints", s.requireAuth(false, s.spreadList)},
-		{http.MethodGet, "/fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
+		{"POST /runs", s.requireAuth(true, s.record)},
+		{"PATCH /runs/{id}", s.requireAuth(true, s.update)},
+		{"GET /runs", s.requireAuth(false, s.list)},
+		{"GET /runs/{id}", s.requireAuth(false, s.get)},
+		{"GET /compare", s.requireAuth(false, s.compare)},
+		{"GET /fingerprints", s.requireAuth(false, s.spreadList)},
+		{"GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
 		// /healthz stays unauthenticated so a liveness probe does not need a
 		// credential.
-		{http.MethodGet, "/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok\n"))
 		}},
 		// Ready means the store answers a call, not just that the process is
 		// up. That distinction is a no-op today -- the only backend is
 		// in-memory -- but becomes real once the store is out of process.
-		{http.MethodGet, "/readyz", s.readyz},
-		{http.MethodGet, "/metrics", s.serveMetrics},
+		{"GET /readyz", s.readyz},
+		{"GET /metrics", s.serveMetrics},
 	}
 }
 
@@ -163,11 +167,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	routes := s.routes()
 	for _, rt := range routes {
-		mux.HandleFunc(rt.method+" "+rt.pattern, rt.handler)
+		mux.HandleFunc(rt.pattern, rt.handler)
 	}
 	// http.ServeMux has no NotFoundHandler/MethodNotAllowedHandler hook, so a
-	// request that matches no method+pattern above would otherwise fall back
-	// to net/http's plain-text 404 -- breaking every client parsing the JSON
+	// request that matches no pattern above would otherwise fall back to
+	// net/http's plain-text 404 -- breaking every client parsing the JSON
 	// error envelope every other response uses. Registering "/" (no method,
 	// so it matches anything) as the last-resort route catches that case.
 	mux.HandleFunc("/", s.unmatched(mux, routes))
@@ -184,11 +188,15 @@ func (s *Server) unmatched(mux *http.ServeMux, routes []route) http.HandlerFunc 
 		seen := map[string]bool{}
 		var allowed []string
 		for _, rt := range routes {
+			method, _, ok := strings.Cut(rt.pattern, " ")
+			if !ok || seen[method] {
+				continue
+			}
 			probe := r.Clone(r.Context())
-			probe.Method = rt.method
-			if _, pattern := mux.Handler(probe); pattern == rt.method+" "+rt.pattern && !seen[rt.method] {
-				seen[rt.method] = true
-				allowed = append(allowed, rt.method)
+			probe.Method = method
+			if _, pattern := mux.Handler(probe); pattern == rt.pattern {
+				seen[method] = true
+				allowed = append(allowed, method)
 			}
 		}
 		if len(allowed) == 0 {

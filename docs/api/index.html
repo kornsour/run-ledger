@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>run-ledger API reference</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Interactive API reference for run-ledger, generated from docs/openapi.yaml." />
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    <script>
+      // No proxyUrl here, deliberately. This page is published to GitHub
+      // Pages (see README.md) and "Try it" requests target whatever server
+      // the reader points it at -- almost always a self-hosted instance,
+      // often on localhost, which a public proxy can't reach anyway. Routing
+      // through https://proxy.scalar.com would also relay the reader's
+      // Authorization bearer token through that third party, which is worse
+      // than the alternative.
+      //
+      // The trade-off: this page and the ledger it talks to are different
+      // origins, and the server sets no CORS headers, so a browser will
+      // block "Try it" from completing against a real deployment until the
+      // reader either serves this page from the same origin as the API or
+      // the server starts sending Access-Control-Allow-Origin. That's a
+      // deliberate gap, not an oversight -- self-hosting this page alongside
+      // the server it describes is the supported path; the hosted GitHub
+      // Pages copy is for reading the reference, not exercising a remote
+      // ledger from a browser.
+      Scalar.createApiReference('#app', {
+        url: '../openapi.yaml',
+      })
+    </script>
+  </body>
+</html>
