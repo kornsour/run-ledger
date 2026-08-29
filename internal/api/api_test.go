@@ -892,7 +892,7 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"running","metrics":{"loss":99.0}}`)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/"+fp, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -917,7 +917,7 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 	// Also confirm it via the collection endpoint: min_runs=1 would surface
 	// a no_repeats group for the finished run, but must not report Count=2.
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&min_runs=1", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?project=p&min_runs=1", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -948,7 +948,7 @@ func TestFingerprintOneAllNonTerminalIs404(t *testing.T) {
 	fp := run["fingerprint"].(string)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/"+fp, nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404 for a fingerprint with no finished run, got %d: %s", w.Code, w.Body)
 	}
