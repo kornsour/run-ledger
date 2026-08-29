@@ -234,9 +234,13 @@ library is importable. A ledger that is down, slow, or unreachable degrades
 to a warning and a local spool file — it never raises into the middle of a
 training run. See [`python/README.md`](python/README.md) for the full
 worked example (wrap a loop, raise partway through, see the run recorded as
-`failed` with the metrics it got to) and why the client makes exactly one
-HTTP call, at the end, rather than one at each end of the run
-([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md)).
+`failed` with the metrics it got to) and for how it survives a kill that
+never reaches `__exit__`: it `POST`s a `running` record the moment the run
+starts and `PATCH`es it to a terminal status when the run ends, so a
+`SIGKILL` or an OOM kill still leaves the start-time record behind, and a
+`SIGTERM` is caught and recorded `failed`
+([ADR 0014](docs/adr/0014-python-client-writes-running-then-patches-terminal.md),
+superseding [ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md)).
 
 ```bash
 pip install -e ./python
@@ -332,11 +336,19 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   justify breaking that. `runledger_runs` is read from the store at scrape
   time rather than tracked as a local counter, since recording is idempotent
   and a retried record must not inflate it.
-- **The Python client writes the ledger once, at the end of a run, not once at
-  each end.** `POST /v1/runs` has no update path yet, so `runledger.Run.start()`
-  buffers status and metrics locally and sends one record when the outcome is
-  known, rather than a `running` record it cannot later revise.
-  ([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md))
+- **The Python client writes a `running` record when a run starts, and
+  `PATCH`es it to a terminal status when the run ends.** It first wrote the
+  ledger once, at the end, because a `running` record's mid-training metric
+  would be counted as a repeat measurement and could rank a fingerprint
+  worst-reproducing before the run had even finished
+  ([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md)). Once
+  `spread` excluded non-terminal runs (#52), that reason no longer applied,
+  and writing once had been paying a real cost the whole time: nothing runs
+  `__exit__` for a `SIGKILL` or an OOM kill, so a run killed that way left no
+  trace at all. Writing early means the start-time record survives a kill
+  that bypasses Python entirely.
+  ([ADR 0014](docs/adr/0014-python-client-writes-running-then-patches-terminal.md),
+  superseding ADR 0005)
 - **`store.DuckDB` links libduckdb via cgo, on purpose.** Analytical queries over
   a high-cardinality key space are what this ledger is for, and that is a
   column-oriented workload SQLite (row-oriented) answers slowly and ClickHouse
