@@ -1,0 +1,33 @@
+name: Auto-merge
+
+# Turns on GitHub's native auto-merge for a PR as soon as it's opened, so it
+# merges itself once the required "build" and "python" checks (see ci.yml)
+# go green -- no one has to click "Enable auto-merge" by hand on every PR.
+#
+# Restricted to PRs whose head branch lives in this repo, not a fork. A fork
+# PR's GITHUB_TOKEN is read-only, so this job would just fail closed for one
+# anyway -- but the check is explicit here because branch protection on main
+# requires no review, only the two checks above. Without this restriction,
+# any external contributor's PR would merge itself the moment CI passes,
+# with no human in the loop at all.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
