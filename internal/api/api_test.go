@@ -35,7 +35,9 @@ func authed(method, path, token string) *http.Request {
 func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(w, req)
 	return w
 }
 
@@ -369,6 +371,7 @@ func TestMetricsEndpointReportsStoreConflict(t *testing.T) {
 	// Same run id, different content -> conflict.
 	req := httptest.NewRequest(http.MethodPost, "/runs",
 		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
@@ -393,6 +396,7 @@ func TestNoTokenConfiguredAllowsEverything(t *testing.T) {
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	w = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201 with no token configured, got %d: %s", w.Code, w.Body)
@@ -434,6 +438,7 @@ func TestTokenConfiguredRefusesMissingOrWrongOnBothVerbs(t *testing.T) {
 	w = httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer write-secret")
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("want 201 with the correct token, got %d: %s", w.Code, w.Body)
@@ -774,7 +779,9 @@ func TestFingerprintUnknownIs404(t *testing.T) {
 func patch(t *testing.T, h http.Handler, id, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodPatch, "/runs/"+id, strings.NewReader(body)))
+	req := httptest.NewRequest(http.MethodPatch, "/runs/"+id, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(w, req)
 	return w
 }
 
@@ -958,6 +965,7 @@ func TestRecordIDTakenHasSpecificCode(t *testing.T) {
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/runs",
 		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
+	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
@@ -1113,5 +1121,96 @@ func TestDisallowedMethodOnPathParamRouteIs405(t *testing.T) {
 	allow := w.Header().Get("Allow")
 	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "PATCH") {
 		t.Fatalf("want Allow to list GET and PATCH for /runs/{id}, got %q", allow)
+	}
+}
+
+func requestWithContentType(method, path, contentType, body string) *http.Request {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return req
+}
+
+func TestRecordWrongContentTypeIs415(t *testing.T) {
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
+	for _, ct := range []string{"text/plain", ""} {
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", ct, body))
+		if w.Code != http.StatusUnsupportedMediaType {
+			t.Fatalf("Content-Type %q: want 415, got %d: %s", ct, w.Code, w.Body)
+		}
+		got := errBody(t, w)
+		if got["code"] != "unsupported_media_type" {
+			t.Fatalf("Content-Type %q: want code unsupported_media_type, got %q: %s", ct, got["code"], w.Body)
+		}
+	}
+}
+
+func TestRecordAcceptsJSONWithCharsetParameter(t *testing.T) {
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", "application/json; charset=utf-8", body))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("a charset parameter must not be mistaken for a wrong media type, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestUpdateWrongContentTypeIs415(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, requestWithContentType(http.MethodPatch, "/runs/"+id, "text/plain", `{"status":"running"}`))
+	if w.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("want 415, got %d: %s", w.Code, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "unsupported_media_type" {
+		t.Fatalf("want code unsupported_media_type, got %q: %s", got["code"], w.Body)
+	}
+}
+
+func TestOversizedBodyIsCleanBadRequest(t *testing.T) {
+	// One oversized value is enough to blow the cap without needing a large
+	// number of map entries.
+	big := strings.Repeat("a", MaxRequestBodyBytes+1024)
+	body := fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","params":{"huge":%q}}`, big)
+
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", "application/json", body))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a body over the cap must fail cleanly as 400, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestSameStartedAtWithoutClientRunIDDoesNotCollide(t *testing.T) {
+	h := srv(t)
+	// Same identity fields (so the same fingerprint) and the same
+	// client-supplied started_at, as a scheduler emitting second-granularity
+	// timestamps might send for two real repeats -- device differs so the
+	// two runs are not byte-identical (which would make the second record an
+	// idempotent no-op rather than exercise the id-collision path at all).
+	startedAt := "2026-01-01T00:00:00Z"
+	body1 := fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"started_at":%q,"device":"gpu0"}`, startedAt)
+	body2 := fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"started_at":%q,"device":"gpu1"}`, startedAt)
+
+	w1 := post(t, h, body1)
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("first record: want 201, got %d: %s", w1.Code, w1.Body)
+	}
+	w2 := post(t, h, body2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("second record sharing started_at: want 201, not a spurious id conflict, got %d: %s", w2.Code, w2.Body)
+	}
+
+	var r1, r2 map[string]any
+	_ = json.Unmarshal(w1.Body.Bytes(), &r1)
+	_ = json.Unmarshal(w2.Body.Bytes(), &r2)
+	if r1["run_id"] == r2["run_id"] {
+		t.Fatalf("two distinct runs sharing a fingerprint and started_at must not collide into one run_id: %v", r1["run_id"])
 	}
 }

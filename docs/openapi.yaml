@@ -76,6 +76,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "415":
+          description: Content-Type is missing or not application/json
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
     get:
       operationId: listRuns
       summary: List runs
@@ -205,6 +211,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Identity field in the patch conflicts with the stored run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Content-Type is missing or not application/json
           content:
             application/json:
               schema:

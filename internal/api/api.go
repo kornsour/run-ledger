@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"sort"
@@ -33,6 +34,12 @@ const DefaultListLimit = 50
 // what limit a request asks for. Without a ceiling, a client (or the size of
 // the ledger itself) decides how large a response the server hands back.
 const MaxListLimit = 500
+
+// MaxRequestBodyBytes caps how much of a JSON request body record and update
+// will read before giving up. params and metrics are client-controlled maps
+// that get hashed into the fingerprint; without a ceiling, a client decides
+// how much memory decoding one request costs the server.
+const MaxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // Auth holds the bearer tokens that gate access to the API. A zero-value Auth
 // requires no token at all, which is the default: a single-user local ledger
@@ -270,6 +277,19 @@ func newRequestID() string {
 	return hex.EncodeToString(buf[:])
 }
 
+// randomSuffix returns a short identifier appended to a server-assigned
+// run_id, purely to break accidental collisions -- see its call site in
+// record.
+func randomSuffix() string {
+	var buf [5]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Same reasoning as newRequestID's fallback: a broken platform
+		// shouldn't panic this request over an unrelated fault.
+		return "unavailable"
+	}
+	return hex.EncodeToString(buf[:])
+}
+
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.List(r.Context(), store.Query{Limit: 1}); err != nil {
 		s.metrics.StoreError("readyz")
@@ -322,9 +342,31 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
+// requireJSON reports an error unless r declares an application/json body.
+// An optional charset parameter (e.g. "; charset=utf-8") is allowed --
+// mime.ParseMediaType strips it before the comparison, so a legitimate
+// charset suffix is not mistaken for a wrong media type. A missing
+// Content-Type is rejected the same as a wrong one: an absent header is not
+// an invitation to assume JSON.
+func requireJSON(r *http.Request) error {
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		return fmt.Errorf("missing Content-Type, want application/json")
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil || mediaType != "application/json" {
+		return fmt.Errorf("unsupported Content-Type %q, want application/json", ct)
+	}
+	return nil
+}
+
 func (s *Server) record(w http.ResponseWriter, r *http.Request) {
+	if err := requireJSON(r); err != nil {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type", err)
+		return
+	}
 	var run lineage.Run
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes))
 	// An unknown field is a typo in a lineage record. Accepting it silently
 	// would store a run that claims to describe an experiment it does not.
 	dec.DisallowUnknownFields()
@@ -342,7 +384,12 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	// caller assert that two different experiments were the same.
 	run.Fingerprint = run.Compute()
 	if run.RunID == "" {
-		run.RunID = run.Fingerprint[:16] + "-" + strconv.FormatInt(run.StartedAt.UnixNano(), 36)
+		// started_at is client-supplied, so two legitimate repeats of the same
+		// experiment sharing a coarse timestamp (e.g. a scheduler emitting
+		// second-granularity times) would otherwise collide into one run_id --
+		// the random suffix only needs to break that accidental tie, not be
+		// unguessable.
+		run.RunID = run.Fingerprint[:16] + "-" + strconv.FormatInt(run.StartedAt.UnixNano(), 36) + "-" + randomSuffix()
 	}
 	if err := s.store.Record(r.Context(), run); err != nil {
 		switch {
@@ -398,8 +445,12 @@ type patchRequest struct {
 }
 
 func (s *Server) update(w http.ResponseWriter, r *http.Request) {
+	if err := requireJSON(r); err != nil {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type", err)
+		return
+	}
 	var req patchRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", err)
