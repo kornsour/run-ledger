@@ -24,11 +24,42 @@ with runledger.Run.start(project="demo", seed=1, params={"lr": 3e-4}) as run:
         run.log_metric("loss", loss)
 ```
 
+> **Run this from inside a git checkout.** `Run.start()` captures the commit
+> before the `with` body runs and raises `runledger.NoGitCommitError` if there
+> isn't one — a run whose code can't be identified isn't lineage. That is the
+> same rule the server enforces ([ADR 0003](../docs/adr/0003-dirty-tree-without-config-hash-is-refused.md)),
+> and it means **hosted notebook environments without a checkout (Colab and
+> friends) are not supported**. There is no flag to switch it off.
+
 `Run.start()` captures git context (commit, dirty flag) the moment it is
 called, the same way `rlctl record` does, and refuses to proceed — raising
 `runledger.NoGitCommitError` or `runledger.DirtyTreeError` — if the run would
 not be reconstructible. That check happens before any training runs, not
 after.
+
+### What `Run.start()` accepts
+
+Every option is an explicit keyword argument, so your editor and type checker
+can see them (the package ships a PEP 561 `py.typed` marker):
+
+```python
+Run.start(
+    project,                  # required
+    *,
+    seed=0,
+    params=None,              # dict; values are stringified on the wire
+    dataset_version="",
+    model_version="",
+    config_hash="",           # required when the tree is dirty
+    server=None,              # defaults to $RUNLEDGER_ADDR
+    timeout=10.0,
+    spool_path="~/.runledger/spool.jsonl",
+)
+```
+
+The first six are **identity** — they are hashed into the run's fingerprint.
+The last three configure the client and are not recorded in the ledger. The
+names match the wire schema and `rlctl`'s flags exactly.
 
 `run.log_metric(name, value)` records a measured metric as training
 progresses. Nothing is sent to the ledger yet — see below.

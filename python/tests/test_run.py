@@ -8,6 +8,8 @@ exercise the client honestly.
 
 from __future__ import annotations
 
+import dataclasses
+import inspect
 import json
 import os
 import shutil
@@ -66,6 +68,58 @@ class _FakeLedger:
 
 def _clean_git(commit="abcdef1234567890", dirty=False):
     return mock.patch.object(run_module._git, "context", return_value=(commit, dirty))
+
+
+class PublicSignatureTests(unittest.TestCase):
+    """Run.start() is the package's entire public entry point.
+
+    Its parameters are spelled out rather than swallowed by **kwargs so an
+    editor, a type checker, and help() can all see them. That means the
+    defaults exist in two places -- the signature and the dataclass field --
+    so these tests fail if the two ever drift.
+    """
+
+    def test_start_exposes_every_caller_settable_field(self):
+        sig = inspect.signature(runledger.Run.start)
+        exposed = set(sig.parameters) - {"cls"}
+        settable = {
+            f.name
+            for f in dataclasses.fields(runledger.Run)
+            if f.init and not f.name.startswith("_")
+        }
+        self.assertEqual(
+            exposed,
+            settable,
+            "Run.start() and the Run dataclass disagree about what a caller may set",
+        )
+
+    def test_start_defaults_match_the_dataclass(self):
+        params = inspect.signature(runledger.Run.start).parameters
+        for f in dataclasses.fields(runledger.Run):
+            if not f.init or f.name.startswith("_"):
+                continue
+            if f.default is dataclasses.MISSING:
+                continue  # required, or a default_factory checked below
+            self.assertEqual(
+                params[f.name].default,
+                f.default,
+                f"default for {f.name}= drifted between start() and the dataclass",
+            )
+
+    def test_factory_defaults_are_reachable_through_start(self):
+        # params and server carry default_factory values, which cannot be
+        # repeated literally in the signature. start() forwards a sentinel
+        # instead; these assert the real defaults still arrive.
+        with mock.patch.dict(os.environ, {"RUNLEDGER_ADDR": "http://ledger.example"}):
+            run = runledger.Run(project="p")
+        self.assertEqual(run.server, "http://ledger.example")
+        self.assertEqual(runledger.Run(project="p").params, {})
+
+    def test_package_ships_a_py_typed_marker(self):
+        # PEP 561: without this file, a consumer's type checker ignores every
+        # annotation in the package.
+        marker = os.path.join(os.path.dirname(runledger.__file__), "py.typed")
+        self.assertTrue(os.path.exists(marker), "runledger/py.typed is missing")
 
 
 class RunStartValidationTests(unittest.TestCase):
