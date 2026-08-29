@@ -49,7 +49,7 @@ class _Handler(BaseHTTPRequestHandler):
             }
         )
 
-        if parsed.path == "/runs":
+        if parsed.path == "/v1/runs":
             # Three rows total, served two at a time, so a caller that does
             # not follow next_cursor visibly comes up short.
             cursor = query.get("cursor", "")
@@ -61,15 +61,15 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, {"runs": [_run_row(2)], "count": 1, "limit": 2})
             return
 
-        if parsed.path.startswith("/runs/"):
-            run_id = urllib.parse.unquote(parsed.path[len("/runs/"):])
+        if parsed.path.startswith("/v1/runs/"):
+            run_id = urllib.parse.unquote(parsed.path[len("/v1/runs/"):])
             if run_id == "missing":
                 self._json(404, {"error": "run not found"})
             else:
                 self._json(200, {"run_id": run_id, "project": "demo"})
             return
 
-        if parsed.path == "/fingerprints":
+        if parsed.path == "/v1/fingerprints":
             if query.get("project") == "empty":
                 # The server sends null, not [], when nothing qualifies.
                 self._json(200, {"groups": None, "count": 0})
@@ -78,8 +78,8 @@ class _Handler(BaseHTTPRequestHandler):
                                  "count": 1})
             return
 
-        if parsed.path.startswith("/fingerprints/"):
-            fp = parsed.path[len("/fingerprints/"):]
+        if parsed.path.startswith("/v1/fingerprints/"):
+            fp = parsed.path[len("/v1/fingerprints/"):]
             if fp == "missing":
                 self._json(404, {"error": 'no run recorded with fingerprint "missing"'})
             else:
@@ -167,7 +167,7 @@ class RunTests(unittest.TestCase):
     def test_run_id_is_url_escaped(self):
         with _FakeLedger() as led:
             runledger.run("a/b?c", server=led.addr)
-        self.assertEqual(led.requests[0]["path"], "/runs/a%2Fb%3Fc")
+        self.assertEqual(led.requests[0]["path"], "/v1/runs/a%2Fb%3Fc")
 
 
 class SpreadTests(unittest.TestCase):
@@ -186,7 +186,7 @@ class SpreadTests(unittest.TestCase):
             got = runledger.spread(fingerprint="fp9", server=led.addr)
         self.assertEqual(len(got), 1)
         self.assertTrue(got[0]["no_repeats"])
-        self.assertEqual(led.requests[0]["path"], "/fingerprints/fp9")
+        self.assertEqual(led.requests[0]["path"], "/v1/fingerprints/fp9")
 
     def test_unknown_fingerprint_raises(self):
         with _FakeLedger() as led:

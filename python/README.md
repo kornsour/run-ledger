@@ -192,10 +192,10 @@ or fingerprint.
 
 It might look natural for `Run.start()` to record the run as `running`
 immediately, then update it to `succeeded`/`failed` at the end. The API
-supports that — `PATCH /runs/{id}` exists, and `rlctl start` / `rlctl finish`
+supports that — `PATCH /v1/runs/{id}` exists, and `rlctl start` / `rlctl finish`
 use it. This client deliberately does not.
 
-The obstacle is on the read side, not the write side. `/fingerprints` groups
+The obstacle is on the read side, not the write side. `/v1/fingerprints` groups
 every run sharing a fingerprint without filtering on status, so a `running`
 record would count as a *repeat measurement* of that experiment and its
 mid-training metric would join the group's min/max/mean/stddev. A loss

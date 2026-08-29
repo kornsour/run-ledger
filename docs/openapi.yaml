@@ -8,7 +8,7 @@ info:
     framework_version, status, timestamps, checkpoint_uri, metrics) record
     what happened without affecting it. See the repository README for the
     full model.
-  version: "1.0"
+  version: "1.0.0"
   license:
     name: MIT
 servers:
@@ -22,7 +22,7 @@ security:
   - {}
 
 paths:
-  /runs:
+  /v1/runs:
     post:
       operationId: recordRun
       summary: Record a run
@@ -57,7 +57,7 @@ paths:
           description: Run recorded
           headers:
             Location:
-              description: /runs/{run_id} of the newly recorded run.
+              description: /v1/runs/{run_id} of the newly recorded run.
               schema:
                 type: string
           content:
@@ -183,7 +183,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /runs/{id}:
+  /v1/runs/{id}:
     get:
       operationId: getRun
       summary: Get one run
@@ -289,10 +289,15 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /compare:
+  /v1/comparisons:
     get:
       operationId: compareRuns
       summary: Structured diff of two runs
+      description: >
+        A comparison is addressed by the pair of run ids being compared (a,
+        b), not owned by either run -- this sits next to /v1/runs and
+        /v1/fingerprints as its own resource collection rather than a verb
+        hanging off the root.
       security:
         - bearerAuth: []
         - {}
@@ -339,7 +344,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /fingerprints:
+  /v1/fingerprints:
     get:
       operationId: listFingerprintSpread
       summary: Fingerprints ranked by widest relative metric spread
@@ -348,7 +353,7 @@ paths:
         broken by fingerprint for a deterministic, resumable order. Defaults
         to fingerprints with more than one recorded run (min_runs=2); pass
         min_runs=1 or min_runs=0 to also see fingerprints with no repeats --
-        the same runs GET /fingerprints/{fingerprint} already reports for
+        the same runs GET /v1/fingerprints/{fingerprint} already reports for
         them as no_repeats, so this is what keeps the two endpoints'
         membership consistent. Unrecognized query parameters are rejected
         rather than silently ignored. Only terminal runs (succeeded, failed,
@@ -416,7 +421,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
-  /fingerprints/{fingerprint}:
+  /v1/fingerprints/{fingerprint}:
     get:
       operationId: getFingerprintSpread
       summary: Spread summary for one fingerprint

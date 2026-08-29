@@ -54,7 +54,7 @@ import warnings
 from typing import List, Optional
 
 from ._run import DEFAULT_SERVER, DEFAULT_SPOOL_PATH, DEFAULT_TIMEOUT
-from .read import LedgerUnreachableError, _error_detail
+from .read import API_VERSION, LedgerUnreachableError, _error_detail
 
 # Statuses the server will never reconsider on an unmodified retry: the
 # payload itself is what's wrong (400), or a run with this id already
@@ -94,7 +94,7 @@ def _rejected_path(spool_path: str) -> str:
 
 def _post(line: str, *, server: str, token: Optional[str], timeout: float) -> None:
     req = urllib.request.Request(
-        server.rstrip("/") + "/runs",
+        server.rstrip("/") + API_VERSION + "/runs",
         data=line.encode("utf-8"),
         method="POST",
         headers={"Content-Type": "application/json"},

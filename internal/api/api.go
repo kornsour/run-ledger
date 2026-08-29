@@ -125,14 +125,22 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 }
 
 // route is one entry in the server's route table: the exact pattern
-// ServeMux registers it under (e.g. "POST /runs"), paired with its handler.
-// unmatched (below) walks this same table to tell "no such path" apart from
-// "wrong method for this path" once the mux itself has failed to find a
-// specific match.
+// ServeMux registers it under (e.g. "POST /v1/runs"), paired with its
+// handler. unmatched (below) walks this same table to tell "no such path"
+// apart from "wrong method for this path" once the mux itself has failed to
+// find a specific match.
 type route struct {
 	pattern string
 	handler http.HandlerFunc
 }
+
+// apiVersion is the path segment every resource route is versioned under --
+// see ADR 0009. Health, readiness, and metrics are deliberately excluded:
+// they are fixed operational conventions (liveness probes, Prometheus
+// scrape targets), not part of the ledger's resource model, so bumping the
+// API version must never also mean reconfiguring a probe or a scrape
+// config.
+const apiVersion = "/v1"
 
 // routes is the server's route table -- the single source of truth for what
 // this server serves. Handler builds the mux from it, and spec_test.go
@@ -140,13 +148,13 @@ type route struct {
 // without a matching spec change fails CI rather than shipping undocumented.
 func (s *Server) routes() []route {
 	return []route{
-		{"POST /runs", s.requireAuth(true, s.record)},
-		{"PATCH /runs/{id}", s.requireAuth(true, s.update)},
-		{"GET /runs", s.requireAuth(false, s.list)},
-		{"GET /runs/{id}", s.requireAuth(false, s.get)},
-		{"GET /compare", s.requireAuth(false, s.compare)},
-		{"GET /fingerprints", s.requireAuth(false, s.spreadList)},
-		{"GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
+		{"POST " + apiVersion + "/runs", s.requireAuth(true, s.record)},
+		{"PATCH " + apiVersion + "/runs/{id}", s.requireAuth(true, s.update)},
+		{"GET " + apiVersion + "/runs", s.requireAuth(false, s.list)},
+		{"GET " + apiVersion + "/runs/{id}", s.requireAuth(false, s.get)},
+		{"GET " + apiVersion + "/comparisons", s.requireAuth(false, s.compare)},
+		{"GET " + apiVersion + "/fingerprints", s.requireAuth(false, s.spreadList)},
+		{"GET " + apiVersion + "/fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
 		// /healthz stays unauthenticated so a liveness probe does not need a
 		// credential.
 		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -417,7 +425,7 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("recorded run", "run_id", run.RunID, "project", run.Project, "fingerprint", run.Fingerprint)
 	// The server assigns run_id when the caller doesn't supply one, so
 	// Location is the only way to learn it without parsing the body.
-	w.Header().Set("Location", "/runs/"+run.RunID)
+	w.Header().Set("Location", apiVersion+"/runs/"+run.RunID)
 	writeJSON(w, http.StatusCreated, run)
 }
 
