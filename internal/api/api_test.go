@@ -598,9 +598,9 @@ func TestFingerprintsListOnlyIncludesRepeats(t *testing.T) {
 	h := srv(t)
 	// Two runs of the same experiment (identical identity fields, so they
 	// share a fingerprint), one run of a different experiment.
-	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
-	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
-	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"metrics":{"loss":0.1}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.4}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.5}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"status":"succeeded","metrics":{"loss":0.1}}`)
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p", nil))
@@ -631,9 +631,9 @@ func TestFingerprintsListMinRunsIncludesLoneRuns(t *testing.T) {
 	// the default (min_runs=2) sees only the first; min_runs=1 or 0 must
 	// also surface the lone run, matching what GET /fingerprints/{fp} would
 	// already report for it (no_repeats: true, not absent from the list).
-	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
-	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
-	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"metrics":{"loss":0.1}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.4}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.5}}`)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"status":"succeeded","metrics":{"loss":0.1}}`)
 	var lone map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &lone)
 	loneFP := lone["fingerprint"].(string)
@@ -690,8 +690,8 @@ func TestFingerprintsListPaginatesWithoutSkippingOrRepeating(t *testing.T) {
 		// Distinct seeds -> distinct fingerprints; two runs each so every
 		// group clears the default min_runs and has a real (zero) spread to
 		// sort on.
-		post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"metrics":{"loss":0.1}}`, i))
-		w := post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"metrics":{"loss":0.2}}`, i))
+		post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"status":"succeeded","metrics":{"loss":0.1}}`, i))
+		w := post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"status":"succeeded","metrics":{"loss":0.2}}`, i))
 		var created map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &created)
 		fps[created["fingerprint"].(string)] = true
@@ -806,9 +806,9 @@ func TestFingerprintsListEmptyResultIsEmptyArrayNotNull(t *testing.T) {
 func TestFingerprintOneGroupReportsMetricStats(t *testing.T) {
 	h := srv(t)
 	var a, b map[string]any
-	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.4}}`)
 	_ = json.Unmarshal(w.Body.Bytes(), &a)
-	w = post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
+	w = post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.5}}`)
 	_ = json.Unmarshal(w.Body.Bytes(), &b)
 	fp := a["fingerprint"].(string)
 
@@ -843,7 +843,7 @@ func TestFingerprintOneGroupReportsMetricStats(t *testing.T) {
 
 func TestFingerprintSingleRunIsNoRepeats(t *testing.T) {
 	h := srv(t)
-	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.4}}`)
 	var created map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
 	fp := created["fingerprint"].(string)
@@ -873,6 +873,84 @@ func TestFingerprintUnknownIs404(t *testing.T) {
 	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/nope", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", w.Code)
+	}
+}
+
+// TestFingerprintOneIgnoresNonTerminalRuns pins issue #23: a running (or
+// otherwise non-terminal) run carries whatever metrics were logged so far,
+// not a finished measurement. It must not join a finished run's spread, and
+// it must not turn a lone finished run into a false no_repeats:false.
+func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"succeeded","metrics":{"loss":0.4}}`)
+	var finished map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &finished)
+	fp := finished["fingerprint"].(string)
+
+	// Same experiment (same identity fields), still running -- its
+	// mid-training metric must not join the finished run's group.
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"running","metrics":{"loss":99.0}}`)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var out struct {
+		Count     int  `json:"count"`
+		NoRepeats bool `json:"no_repeats"`
+		Metrics   map[string]struct {
+			Count int     `json:"count"`
+			Mean  float64 `json:"mean"`
+		} `json:"metrics"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.NoRepeats || out.Count != 1 {
+		t.Fatalf("running run must not count as a repeat, got %+v", out)
+	}
+	if loss, ok := out.Metrics["loss"]; ok {
+		t.Fatalf("running run's metric must not enter the group's stats, got %+v", loss)
+	}
+
+	// Also confirm it via the collection endpoint: min_runs=1 would surface
+	// a no_repeats group for the finished run, but must not report Count=2.
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&min_runs=1", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var list struct {
+		Groups []struct {
+			Fingerprint string `json:"fingerprint"`
+			Count       int    `json:"count"`
+			NoRepeats   bool   `json:"no_repeats"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Groups) != 1 || list.Groups[0].Fingerprint != fp || list.Groups[0].Count != 1 || !list.Groups[0].NoRepeats {
+		t.Fatalf("want a single no_repeats group of count 1, got %+v", list.Groups)
+	}
+}
+
+// TestFingerprintOneAllNonTerminalIs404 pins the other side of issue #23: a
+// fingerprint that exists only as a created/running run has not been
+// measured yet, so it must not be reported as a (misleadingly empty)
+// no_repeats group -- it must 404, the same as a fingerprint never seen.
+func TestFingerprintOneAllNonTerminalIs404(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"running","metrics":{"loss":3.9}}`)
+	var run map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &run)
+	fp := run["fingerprint"].(string)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404 for a fingerprint with no finished run, got %d: %s", w.Code, w.Body)
 	}
 }
 
