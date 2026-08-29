@@ -370,6 +370,77 @@ func TestListWithRecognizedParamsStillWorks(t *testing.T) {
 	}
 }
 
+// TestAttributionDoesNotAffectFingerprint pins #67's central requirement at
+// the API boundary, not just in lineage.Run.Compute directly: two runs
+// identical except for who submitted them and what launched them must
+// record the same fingerprint, or the same experiment run by two people
+// would silently split into two groups.
+func TestAttributionDoesNotAffectFingerprint(t *testing.T) {
+	h := srv(t)
+	wa := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","submitter_claim":"alice","job_id":"ci-1"}`)
+	wb := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","submitter_claim":"bob","job_id":"ci-2"}`)
+	if wa.Code != http.StatusCreated || wb.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s / %d %s", wa.Code, wa.Body, wb.Code, wb.Body)
+	}
+	var a, b map[string]any
+	_ = json.Unmarshal(wa.Body.Bytes(), &a)
+	_ = json.Unmarshal(wb.Body.Bytes(), &b)
+	if a["fingerprint"] != b["fingerprint"] {
+		t.Fatalf("attribution changed the fingerprint: %v != %v", a["fingerprint"], b["fingerprint"])
+	}
+	if a["submitter_claim"] != "alice" || b["submitter_claim"] != "bob" {
+		t.Fatalf("submitter_claim was not recorded as sent: a=%v b=%v", a["submitter_claim"], b["submitter_claim"])
+	}
+}
+
+func TestListFiltersBySubmitterClaimAndJobID(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"a","config_hash":"cfg","submitter_claim":"alice","job_id":"ci-1"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+	}
+	w = post(t, h, `{"project":"p","git_commit":"b","config_hash":"cfg","submitter_claim":"bob","job_id":"ci-2"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?submitter_claim=alice", nil))
+	var got struct {
+		Runs  []map[string]any `json:"runs"`
+		Count int              `json:"count"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Count != 1 || got.Runs[0]["submitter_claim"] != "alice" {
+		t.Fatalf("submitter_claim filter did not narrow to alice's run: %+v", got)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?job_id=ci-2", nil))
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Count != 1 || got.Runs[0]["job_id"] != "ci-2" {
+		t.Fatalf("job_id filter did not narrow to the matching run: %+v", got)
+	}
+}
+
+func TestUpdatePatchesSubmitterClaimAndJobID(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"submitter_claim":"alice","job_id":"ci-1"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["submitter_claim"] != "alice" || got["job_id"] != "ci-1" {
+		t.Fatalf("want attribution applied by the patch, got %v", got)
+	}
+}
+
 func TestListDefaultsAndCapsLimit(t *testing.T) {
 	h := srv(t)
 	for i := 0; i < 3; i++ {

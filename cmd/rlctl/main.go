@@ -28,13 +28,17 @@ const apiVersion = "/v1"
 const usage = `rlctl — record and compare experiment runs
 
   rlctl record --project P [--seed N] [--dataset V] [--model V] [--param k=v ...] [--metric k=v ...]
+               [--submitter-claim WHO] [--job-id ID]
                            Capture git context from the working tree and record a run.
+                           --submitter-claim is self-asserted, not verified (see ADR 0015).
+                           --job-id defaults from $SLURM_JOB_ID/$CI_JOB_ID/$GITHUB_RUN_ID if set.
   rlctl start  <run-id>    Mark a recorded run running.
   rlctl finish [--status succeeded|failed|cancelled] [--metric k=v ...] [--checkpoint URI] <run-id>
                            Move a running run to a terminal status. --status defaults to succeeded.
   rlctl fail   [--metric k=v ...] <run-id>
                            Shorthand for finish --status failed.
-  rlctl list   [--project P] [--commit SHA] [--status S] [--limit N] [--cursor C]
+  rlctl list   [--project P] [--commit SHA] [--status S] [--submitter-claim WHO] [--job-id ID]
+               [--limit N] [--cursor C]
                            Server caps --limit; pass the printed "next cursor"
                            back as --cursor to fetch the following page.
   rlctl show   <run-id>
@@ -106,6 +110,16 @@ func cmdRecord(args []string) error {
 	device := fs.String("device", "", "device the run used")
 	configHash := fs.String("config-hash", "", "hash of the run configuration")
 	status := fs.String("status", string(lineage.StatusCreated), "run status")
+	// submitterClaim has no environment-derived default, unlike host and
+	// job-id below: a hostname or a scheduler's job id is an objective fact
+	// about the environment, but $USER (or similar) is a weak proxy for
+	// "who is accountable for this run" -- a shared CI runner account, a
+	// shared research VM login -- and defaulting to it would manufacture
+	// exactly the "reads like a fact" problem ADR 0015 exists to avoid.
+	// Requiring an explicit --submitter-claim keeps the claim as deliberate
+	// as it should be.
+	submitterClaim := fs.String("submitter-claim", "", "who recorded this run (self-asserted; see ADR 0015)")
+	jobID := fs.String("job-id", jobIDFromEnv(), "launching job id; defaults from $SLURM_JOB_ID/$CI_JOB_ID/$GITHUB_RUN_ID if set")
 	params := kvFlag{}
 	metrics := kvFlag{}
 	fs.Var(params, "param", "identity parameter, key=value (repeatable)")
@@ -124,6 +138,7 @@ func cmdRecord(args []string) error {
 		Project: *project, GitCommit: commit, GitDirty: dirty,
 		ConfigHash: *configHash, DatasetVersion: *dataset, ModelVersion: *model,
 		Seed: *seed, Device: *device, Status: lineage.Status(*status),
+		SubmitterClaim: *submitterClaim, JobID: *jobID,
 		StartedAt: time.Now().UTC(),
 	}
 	if host, err := os.Hostname(); err == nil {
@@ -244,6 +259,8 @@ func cmdList(args []string) error {
 	project := fs.String("project", "", "filter by project")
 	commit := fs.String("commit", "", "filter by git commit")
 	status := fs.String("status", "", "filter by status")
+	submitterClaim := fs.String("submitter-claim", "", "filter by submitter_claim (self-asserted; see ADR 0015)")
+	jobID := fs.String("job-id", "", "filter by job_id")
 	limit := fs.Int("limit", 20, "maximum rows (server-capped; see --help)")
 	cursor := fs.String("cursor", "", "opaque page cursor from a previous list's \"next cursor\" line")
 	_ = fs.Parse(args)
@@ -252,6 +269,8 @@ func cmdList(args []string) error {
 	set(q, "project", *project)
 	set(q, "git_commit", *commit)
 	set(q, "status", *status)
+	set(q, "submitter_claim", *submitterClaim)
+	set(q, "job_id", *jobID)
 	set(q, "cursor", *cursor)
 	q.Set("limit", fmt.Sprint(*limit))
 
@@ -484,6 +503,22 @@ func gitContext() (commit string, dirty bool) {
 	commit = run("rev-parse", "HEAD")
 	dirty = run("status", "--porcelain") != ""
 	return commit, dirty
+}
+
+// jobIDFromEnv reads the first known scheduler/CI environment variable that
+// is set, in the order a run is most likely to be launched by one: a Slurm
+// allocation, then a generic CI job id (GitLab CI, CircleCI, and others all
+// use CI_JOB_ID), then GitHub Actions' own run id. Unlike submitterClaim,
+// no --job-id flag is required to get a value: these are objective facts
+// about the launching environment, the same kind of fact os.Hostname()
+// already supplies for Host, not a claim about who is accountable.
+func jobIDFromEnv() string {
+	for _, k := range []string{"SLURM_JOB_ID", "CI_JOB_ID", "GITHUB_RUN_ID"} {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func defaultServer() string {

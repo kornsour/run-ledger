@@ -467,6 +467,8 @@ type patchRequest struct {
 	Host             *string            `json:"host"`
 	Device           *string            `json:"device"`
 	FrameworkVersion *string            `json:"framework_version"`
+	SubmitterClaim   *string            `json:"submitter_claim"`
+	JobID            *string            `json:"job_id"`
 	Metrics          map[string]float64 `json:"metrics"`
 }
 
@@ -488,6 +490,7 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		ModelVersion: req.ModelVersion, Seed: req.Seed, Params: req.Params,
 		Status: req.Status, EndedAt: req.EndedAt, CheckpointURI: req.CheckpointURI,
 		Host: req.Host, Device: req.Device, FrameworkVersion: req.FrameworkVersion,
+		SubmitterClaim: req.SubmitterClaim, JobID: req.JobID,
 		Metrics: req.Metrics,
 	}
 	run, err := s.store.Update(r.Context(), r.PathValue("id"), p)
@@ -550,6 +553,10 @@ var listQueryParams = map[string]bool{
 	"project": true, "git_commit": true, "fingerprint": true,
 	"status": true, "device": true, "limit": true, "cursor": true,
 	"since": true, "until": true,
+	// submitter_claim and job_id: the "filter GET /v1/runs to your own
+	// runs" workflow #67 exists for, consistent with the existing
+	// provenance filter (device) rather than a new mechanism.
+	"submitter_claim": true, "job_id": true,
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -590,15 +597,17 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := s.store.List(r.Context(), store.Query{
-		Project:     q.Get("project"),
-		GitCommit:   q.Get("git_commit"),
-		Fingerprint: q.Get("fingerprint"),
-		Status:      status,
-		Device:      q.Get("device"),
-		Limit:       limit,
-		After:       after,
-		Since:       since,
-		Until:       until,
+		Project:        q.Get("project"),
+		GitCommit:      q.Get("git_commit"),
+		Fingerprint:    q.Get("fingerprint"),
+		Status:         status,
+		Device:         q.Get("device"),
+		SubmitterClaim: q.Get("submitter_claim"),
+		JobID:          q.Get("job_id"),
+		Limit:          limit,
+		After:          after,
+		Since:          since,
+		Until:          until,
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
