@@ -411,6 +411,7 @@ components:
         ended_at:
           type: string
           format: date-time
+          description: Absent until the run ends -- never a zero-valued timestamp.
         checkpoint_uri:
           type: string
         metrics:
@@ -465,6 +466,10 @@ components:
         ended_at:
           type: string
           format: date-time
+          description: >
+            Optional on a terminal status transition (succeeded, failed,
+            cancelled) -- the server defaults it to receive time when the
+            request omits it.
         checkpoint_uri:
           type: string
         host:

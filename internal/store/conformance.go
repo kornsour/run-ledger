@@ -295,7 +295,7 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		if got.Status != lineage.StatusSucceeded || got.Metrics["loss"] != 0.1 {
 			t.Fatalf("want succeeded with loss=0.1, got %+v", got)
 		}
-		if !got.EndedAt.Equal(endedAt) {
+		if got.EndedAt == nil || !got.EndedAt.Equal(endedAt) {
 			t.Fatalf("ended_at not applied: got %v, want %v", got.EndedAt, endedAt)
 		}
 
@@ -306,6 +306,58 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		if reGot.Status != lineage.StatusSucceeded || reGot.Metrics["loss"] != 0.1 {
 			t.Fatalf("update did not persist: %+v", reGot)
+		}
+	})
+
+	t.Run("a recorded run has no ended_at until it ends", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.EndedAt != nil {
+			t.Fatalf("want no ended_at on an unfinished run, got %v", got.EndedAt)
+		}
+	})
+
+	t.Run("a terminal update with no ended_at defaults it to receive time", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+
+		before := time.Now()
+		succeeded := lineage.StatusSucceeded
+		got, err := s.Update(ctx, "a", Patch{Status: &succeeded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := time.Now()
+
+		if got.EndedAt == nil {
+			t.Fatal("want ended_at defaulted on a terminal transition, got nil")
+		}
+		// Generous tolerance -- this is checking "did the store stamp receive
+		// time," not measuring latency.
+		if got.EndedAt.Before(before.Add(-5*time.Second)) || got.EndedAt.After(after.Add(5*time.Second)) {
+			t.Fatalf("want ended_at near now (%v..%v), got %v", before, after, got.EndedAt)
+		}
+
+		reGot, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reGot.EndedAt == nil || !reGot.EndedAt.Equal(*got.EndedAt) {
+			t.Fatalf("defaulted ended_at did not persist: got %v, want %v", reGot.EndedAt, got.EndedAt)
 		}
 	})
 

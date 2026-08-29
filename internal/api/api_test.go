@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kornsour/run-ledger/internal/metrics"
 	"github.com/kornsour/run-ledger/internal/store"
@@ -593,6 +594,62 @@ func TestUpdateWalksCreatedToSucceeded(t *testing.T) {
 	metrics, _ := got["metrics"].(map[string]any)
 	if metrics["loss"] != 0.1 {
 		t.Fatalf("want loss=0.1 in the response, got %v", got["metrics"])
+	}
+}
+
+func TestRecordedRunOmitsEndedAtUntilItEnds(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	if v, ok := created["ended_at"]; ok {
+		t.Fatalf("want no ended_at key on a fresh run, got %v", v)
+	}
+	id := created["run_id"].(string)
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs/"+id, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if v, ok := got["ended_at"]; ok {
+		// A run that hasn't ended must never come back as the year-1
+		// timestamp a zero-valued time.Time serializes to.
+		t.Fatalf("want no ended_at key on GET of an unfinished run, got %v", v)
+	}
+}
+
+func TestTerminalPatchWithoutEndedAtDefaultsToReceiveTime(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"status":"running"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("created -> running: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	before := time.Now()
+	w = patch(t, h, id, `{"status":"succeeded"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("running -> succeeded: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	endedAtStr, ok := got["ended_at"].(string)
+	if !ok {
+		t.Fatalf("want ended_at defaulted on a terminal transition, got %v", got["ended_at"])
+	}
+	endedAt, err := time.Parse(time.RFC3339, endedAtStr)
+	if err != nil {
+		t.Fatalf("ended_at %q did not parse: %v", endedAtStr, err)
+	}
+	if endedAt.Before(before.Add(-5*time.Second)) || endedAt.After(time.Now().Add(5*time.Second)) {
+		t.Fatalf("want ended_at near now, got %v", endedAt)
 	}
 }
 

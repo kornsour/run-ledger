@@ -160,7 +160,16 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 		updated.Status = *p.Status
 	}
 	if p.EndedAt != nil {
-		updated.EndedAt = *p.EndedAt
+		updated.EndedAt = p.EndedAt
+	}
+	// existing.Status can't already be terminal (checked above), so reaching
+	// a terminal updated.Status means this patch is the transition that just
+	// caused it -- the same moment a client would otherwise have to supply
+	// EndedAt for itself. Default it here, mirroring the courtesy the record
+	// handler gives StartedAt, so a terminal run never lacks an end time.
+	if lineage.Terminal(updated.Status) && updated.EndedAt == nil {
+		endedAt := time.Now().UTC()
+		updated.EndedAt = &endedAt
 	}
 	if p.CheckpointURI != nil {
 		updated.CheckpointURI = *p.CheckpointURI
