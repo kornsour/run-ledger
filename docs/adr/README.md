@@ -23,6 +23,7 @@ section is a summary of these; this folder is the account.
 | [0009](0009-url-path-versioning-for-the-http-api.md) | URL path versioning (`/v1`) for the HTTP API, excluding health/readiness/metrics | Accepted |
 | [0010](0010-comparisons-is-a-resource-not-a-verb.md) | `/comparisons` is a resource, not a verb | Accepted |
 | [0011](0011-empty-string-means-not-recorded.md) | An empty string means "not recorded" | Accepted |
+| [0014](0014-python-client-writes-running-then-patches-terminal.md) | The Python client writes a `running` record at start, and patches it to a terminal status at the end | Accepted |
 
 ## Adding a record
 
