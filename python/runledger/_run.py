@@ -55,9 +55,13 @@ from . import _git, _provenance
 
 DEFAULT_SERVER = "http://localhost:8080"
 DEFAULT_TIMEOUT = 10.0
-DEFAULT_SPOOL_PATH = os.path.join(
-    os.path.expanduser("~"), ".runledger", "spool.jsonl"
-)
+# Left unexpanded on purpose. Expanding at import time baked the building
+# machine's home directory into the default, which then rendered as an
+# absolute path in help(), IDE tooltips, and the published pdoc page -- and,
+# worse, meant a caller-supplied "~/..." was never expanded at all, since
+# open() does not do it either. Resolution happens in _spool(), at the moment
+# of writing.
+DEFAULT_SPOOL_PATH = os.path.join("~", ".runledger", "spool.jsonl")
 
 
 class UnreconstructibleRunError(RuntimeError):
@@ -101,8 +105,8 @@ class Run:
     project: str
     seed: int = 0
     params: Dict[str, Any] = dataclasses.field(default_factory=dict)
-    dataset: str = ""
-    model: str = ""
+    dataset_version: str = ""
+    model_version: str = ""
     config_hash: str = ""
     server: str = dataclasses.field(
         default_factory=lambda: os.environ.get("RUNLEDGER_ADDR", DEFAULT_SERVER)
@@ -124,7 +128,19 @@ class Run:
 
     @classmethod
     @contextlib.contextmanager
-    def start(cls, project: str, **kwargs: Any) -> Iterator["Run"]:
+    def start(
+        cls,
+        project: str,
+        *,
+        seed: int = 0,
+        params: Optional[Dict[str, Any]] = None,
+        dataset_version: str = "",
+        model_version: str = "",
+        config_hash: str = "",
+        server: Optional[str] = None,
+        timeout: float = DEFAULT_TIMEOUT,
+        spool_path: str = DEFAULT_SPOOL_PATH,
+    ) -> Iterator["Run"]:
         """Context manager: captures lineage now, records the outcome later.
 
         Raises :class:`UnreconstructibleRunError` immediately -- before the
@@ -132,8 +148,46 @@ class Run:
         exception raised inside the ``with`` body is recorded as a
         ``failed`` run (with whatever metrics were logged before the
         exception) and then re-raised unchanged.
+
+        Every option is spelled out here rather than collected into
+        ``**kwargs``: this is the package's entire public entry point, and a
+        signature of ``(project, **kwargs)`` tells an editor, a type checker,
+        and ``help()`` nothing about what a caller may actually pass. The
+        defaults are duplicated from the dataclass fields below, which
+        ``tests/test_run.py`` asserts stays true.
+
+        Identity -- hashed into the run's fingerprint:
+
+        :param project: Project name. Required.
+        :param seed: Random seed.
+        :param params: Hyperparameters. Values are coerced to strings on the
+            wire, so a plain dict of numbers is fine.
+        :param dataset_version: Dataset version identifier.
+        :param model_version: Model version identifier.
+        :param config_hash: Hash of the run's config. Required when the
+            working tree is dirty -- see :class:`DirtyTreeError`.
+
+        Client behaviour -- not recorded in the ledger:
+
+        :param server: Ledger base URL. Defaults to ``$RUNLEDGER_ADDR``, or
+            ``http://localhost:8080`` when that is unset.
+        :param timeout: Per-request timeout in seconds.
+        :param spool_path: Where to append the run record if the ledger
+            cannot be reached.
         """
-        run = cls(project=project, **kwargs)
+        run = cls(
+            project=project,
+            seed=seed,
+            params=params if params is not None else {},
+            dataset_version=dataset_version,
+            model_version=model_version,
+            config_hash=config_hash,
+            # server's default is environment-dependent, so it stays on the
+            # dataclass: forwarding None would override that default with None.
+            **({} if server is None else {"server": server}),
+            timeout=timeout,
+            spool_path=spool_path,
+        )
         run._enter()
         try:
             yield run
@@ -173,8 +227,8 @@ class Run:
             "git_commit": self._git_commit,
             "git_dirty": self._git_dirty,
             "config_hash": self.config_hash,
-            "dataset_version": self.dataset,
-            "model_version": self.model,
+            "dataset_version": self.dataset_version,
+            "model_version": self.model_version,
             "seed": self.seed,
             "status": self.status,
             "started_at": self._started_at,
@@ -217,18 +271,26 @@ class Run:
             # response, non-2xx status).
             warnings.warn(
                 f"runledger: could not record run at {self.server} "
-                f"({exc}); spooling to {self.spool_path} instead",
+                f"({exc}); spooling to {self.resolved_spool_path()} instead",
                 RuntimeWarning,
                 stacklevel=3,
             )
             self._spool(payload)
 
+    def resolved_spool_path(self) -> str:
+        """``spool_path`` with ``~`` expanded -- the file actually written.
+
+        ``spool_path`` is kept as the caller gave it; this is where it lands.
+        """
+        return os.path.expanduser(self.spool_path)
+
     def _spool(self, payload: Dict[str, Any]) -> None:
         try:
-            spool_dir = os.path.dirname(self.spool_path)
+            path = self.resolved_spool_path()
+            spool_dir = os.path.dirname(path)
             if spool_dir:
                 os.makedirs(spool_dir, exist_ok=True)
-            with open(self.spool_path, "a", encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload) + "\n")
             self.spooled = True
         except OSError as exc:

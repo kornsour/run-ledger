@@ -1,0 +1,59 @@
+name: Pages
+
+# Publishes https://kornsour.github.io/run-ledger/.
+#
+# The site is built here rather than served straight from docs/ because half
+# of it is generated: the API reference renders docs/openapi.yaml, the
+# notebook page is the executed notebook, and docs/python/ is pdoc output.
+# Building at deploy time keeps every generated artifact out of git, so none
+# of them can sit in the repo asserting a result nothing re-verified.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a deploy mid-flight: the site would be left half-published.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the client and its docs tooling
+        run: pip install -e './python[docs]'
+      - name: Build the generated pages
+        # Executes the notebook against a real ephemeral ledger and runs
+        # pdoc. A notebook that has stopped working fails the deploy rather
+        # than publishing a stale page.
+        run: make docs
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

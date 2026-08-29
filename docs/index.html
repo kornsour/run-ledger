@@ -1,19 +1,114 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <title>run-ledger API reference</title>
+    <title>run-ledger documentation</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Interactive API reference for run-ledger, generated from docs/openapi.yaml." />
+    <meta name="description" content="Documentation for run-ledger: API reference, Python client reference, and a worked reproducibility notebook." />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #59636e;
+        --border: #d1d9e0;
+        --accent: #0969da;
+        --card: #f6f8fa;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d1117;
+          --fg: #e6edf3;
+          --muted: #9198a1;
+          --border: #3d444d;
+          --accent: #4493f8;
+          --card: #151b23;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 3rem 1.25rem 4rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      }
+      main { max-width: 46rem; margin: 0 auto; }
+      h1 { font-size: 1.9rem; margin: 0 0 .35rem; letter-spacing: -.02em; }
+      .tagline { color: var(--muted); margin: 0 0 .5rem; }
+      .thesis {
+        margin: 1.5rem 0 2.5rem;
+        padding: .9rem 1.1rem;
+        border-left: 3px solid var(--accent);
+        background: var(--card);
+        border-radius: 0 6px 6px 0;
+      }
+      .thesis code { font-size: .95em; }
+      ul.cards { list-style: none; padding: 0; margin: 0; display: grid; gap: 1rem; }
+      .cards a.card {
+        display: block;
+        padding: 1.1rem 1.25rem;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        text-decoration: none;
+        color: inherit;
+      }
+      .cards a.card:hover { border-color: var(--accent); }
+      .cards h2 { margin: 0 0 .3rem; font-size: 1.05rem; color: var(--accent); }
+      .cards p { margin: 0; color: var(--muted); font-size: .94rem; }
+      footer {
+        margin-top: 3rem; padding-top: 1.25rem;
+        border-top: 1px solid var(--border);
+        color: var(--muted); font-size: .9rem;
+      }
+      footer a { color: var(--accent); }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
-    <script>
-      Scalar.createApiReference('#app', {
-        url: './openapi.yaml',
-        proxyUrl: 'https://proxy.scalar.com',
-      })
-    </script>
+    <main>
+      <h1>run-ledger</h1>
+      <p class="tagline">
+        Records what an experiment run <em>was</em>, so a difference in results can be
+        attributed — or shown to be unattributable.
+      </p>
+
+      <p class="thesis">
+        A run's <strong>identity</strong> (commit, config, data, seed, params) is hashed into a
+        fingerprint; its <strong>outcome</strong> is not. Which makes one situation detectable:
+        <strong>same fingerprint + different metrics = something real is going unrecorded.</strong>
+      </p>
+
+      <ul class="cards">
+        <li>
+          <a class="card" href="./api/">
+            <h2>HTTP API reference &rarr;</h2>
+            <p>Every endpoint, request and response schema, rendered from <code>openapi.yaml</code>.</p>
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./reproducibility.html">
+            <h2>Worked example: does this experiment reproduce? &rarr;</h2>
+            <p>
+              A notebook that records the same experiment three times, finds the metric spread,
+              and reads the verdict back. Executed on every deploy, so what you see actually ran.
+            </p>
+          </a>
+        </li>
+        <li>
+          <a class="card" href="./python/">
+            <h2>Python client reference &rarr;</h2>
+            <p><code>Run.start()</code> to record; <code>runs()</code> and <code>spread()</code> to read back.</p>
+          </a>
+        </li>
+      </ul>
+
+      <footer>
+        Source and design decisions on
+        <a href="https://github.com/kornsour/run-ledger">GitHub</a>.
+        The notebook and client reference on this site are generated at deploy time,
+        never committed — so nothing here can claim a result that was not re-verified.
+      </footer>
+    </main>
   </body>
 </html>

@@ -5,7 +5,7 @@ Date: 2026-08-27
 
 ## Context
 
-`runledger.Run.start()` (`python/runledger/run.py`) is a context manager
+`runledger.Run.start()` (`python/runledger/_run.py`) is a context manager
 wrapping a training loop. The obvious design mirrors what a live dashboard
 wants: record the run as `running` the moment it starts, so it is visible
 immediately, then update it to `succeeded` or `failed` when it ends.

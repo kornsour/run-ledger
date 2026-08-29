@@ -6,3 +6,7 @@ coverage.out
 __pycache__/
 *.egg-info/
 *.pyc
+
+# Generated at deploy time by `make docs`, never committed -- see the Makefile.
+docs/reproducibility.html
+docs/python/
