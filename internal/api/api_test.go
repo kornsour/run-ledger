@@ -778,6 +778,33 @@ func TestErrorBodyEchoesRequestID(t *testing.T) {
 	}
 }
 
+func TestUpdateIdenticalTerminalPatchRetriedIs200(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"status":"running"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("created -> running: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	body := `{"status":"succeeded","metrics":{"loss":0.4}}`
+	w = patch(t, h, id, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first terminal patch: want 200, got %d: %s", w.Code, w.Body)
+	}
+
+	// A client that retries after losing the response to the first call must
+	// see the same success, not a 409 it cannot tell apart from a real
+	// conflict.
+	w = patch(t, h, id, body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("identical terminal patch retried: want 200, got %d: %s", w.Code, w.Body)
+	}
+}
+
 func TestUpdateUnknownFieldIsRejected(t *testing.T) {
 	h := srv(t)
 	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)

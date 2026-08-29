@@ -166,6 +166,15 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 	}
 	if lineage.Terminal(existing.Status) {
 		// A terminal run is a finished outcome; nothing about it moves again.
+		// But a patch that asks for exactly what's already stored is a
+		// retry, not an attempt to move it -- a client with at-least-once
+		// delivery (e.g. a "finish" call whose response was lost) must be
+		// able to treat this the same way Record treats a re-recorded
+		// identical run, or a lost 200 turns into a 409 it cannot safely
+		// interpret as success.
+		if isNoopPatch(existing, p) {
+			return existing, nil
+		}
 		return lineage.Run{}, ErrIllegalTransition
 	}
 
@@ -215,6 +224,43 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 		return lineage.Run{}, err
 	}
 	return updated, nil
+}
+
+// isNoopPatch reports whether applying p to existing, an already-terminal
+// run, would change nothing. Identity fields are not checked here --
+// checkIdentityUnchanged has already run by the time this is called -- so
+// this only has to compare the provenance fields a terminal patch could
+// still legally repeat.
+//
+// A metrics-bearing patch is a no-op only if every key it sets already
+// exists in existing.Metrics with the identical value: the merge semantics
+// documented on Patch mean a new key would change the stored map even
+// though every field on the run struct itself stays the same.
+func isNoopPatch(existing lineage.Run, p Patch) bool {
+	if p.Status != nil && *p.Status != existing.Status {
+		return false
+	}
+	if p.EndedAt != nil && (existing.EndedAt == nil || !p.EndedAt.Equal(*existing.EndedAt)) {
+		return false
+	}
+	if p.CheckpointURI != nil && *p.CheckpointURI != existing.CheckpointURI {
+		return false
+	}
+	if p.Host != nil && *p.Host != existing.Host {
+		return false
+	}
+	if p.Device != nil && *p.Device != existing.Device {
+		return false
+	}
+	if p.FrameworkVersion != nil && *p.FrameworkVersion != existing.FrameworkVersion {
+		return false
+	}
+	for k, v := range p.Metrics {
+		if stored, ok := existing.Metrics[k]; !ok || stored != v {
+			return false
+		}
+	}
+	return true
 }
 
 // checkIdentityUnchanged reports ErrIdentityConflict if p sets any identity

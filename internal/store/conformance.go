@@ -436,6 +436,74 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("an identical terminal patch retried is not a conflict", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		first, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}})
+		if err != nil {
+			t.Fatalf("first terminal patch: %v", err)
+		}
+
+		// A client with at-least-once delivery (e.g. a lost response) retries
+		// the exact same request; the run is already terminal and the patch
+		// asks for exactly what's already stored, so this must succeed rather
+		// than 409 -- a 409 here is indistinguishable from an attempt to
+		// rewrite the run's identity or outcome, which is not what happened.
+		second, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}})
+		if err != nil {
+			t.Fatalf("identical retried terminal patch must not conflict, got %v", err)
+		}
+		if second.Status != lineage.StatusSucceeded || second.Metrics["loss"] != 0.4 {
+			t.Fatalf("want the unchanged run back, got %+v", second)
+		}
+		if second.EndedAt == nil || !second.EndedAt.Equal(*first.EndedAt) {
+			t.Fatalf("a no-op retry must not move ended_at, want %v, got %v", first.EndedAt, second.EndedAt)
+		}
+	})
+
+	t.Run("a terminal patch with a genuinely different metric value still conflicts", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		if _, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Update(ctx, "a", Patch{Metrics: map[string]float64{"loss": 0.9}}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a different metric value on a terminal run must still conflict, got %v", err)
+		}
+	})
+
+	t.Run("a terminal patch adding a brand-new metric key still conflicts", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		if _, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Update(ctx, "a", Patch{Metrics: map[string]float64{"accuracy": 0.9}}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a new metric key on a terminal run must still conflict even though existing keys match, got %v", err)
+		}
+	})
+
 	t.Run("update rejects an unknown status", func(t *testing.T) {
 		s := newStore(t)
 		r := mk("a", "p", time.Now())
