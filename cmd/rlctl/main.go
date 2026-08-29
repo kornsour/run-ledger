@@ -310,24 +310,50 @@ func cmdDiff(args []string) error {
 	if err := call(http.MethodGet, *server, "/comparisons?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
-	if len(out.Fields) == 0 {
-		fmt.Println("the two records are identical")
-		return nil
-	}
-	if out.SameExperiment {
-		fmt.Println("same experiment (fingerprints match)")
-	} else {
-		fmt.Println("different experiments (fingerprints differ)")
-	}
-	fmt.Printf("\n%-24s  %-12s  %-20s  %s\n", "FIELD", "KIND", "A", "B")
-	for _, f := range out.Fields {
-		fmt.Printf("%-24s  %-12s  %-20s  %s\n", f.Name, f.Kind, or(f.A, "—"), or(f.B, "—"))
-	}
-	if out.Unattributable {
-		fmt.Println("\nThese runs describe the same experiment but measured differently.")
-		fmt.Println("Something that affected the result is not captured in the record.")
-	}
+	renderDiff(os.Stdout, out)
 	return nil
+}
+
+// renderDiff writes a comparison's verdict and field table.
+//
+// The verdict is read from SameExperiment, never inferred from whether any
+// field rendered. The two can disagree, and did: params {} and
+// {"foo": ""} fingerprint differently, because lineage.Run.Compute hashes
+// only the keys that are present -- while compare.Runs reads both sides
+// through a map index that yields "" for a missing key, so it emits no
+// field at all. Keying the "identical" message off len(Fields) therefore
+// printed the exact opposite of what the server had just reported.
+//
+// Split out from cmdDiff, which can only be exercised against a live
+// server, so the verdict logic is directly testable.
+func renderDiff(w io.Writer, res compare.Result) {
+	if res.SameExperiment && len(res.Fields) == 0 {
+		fmt.Fprintln(w, "the two records are identical")
+		return
+	}
+	if res.SameExperiment {
+		fmt.Fprintln(w, "same experiment (fingerprints match)")
+	} else {
+		fmt.Fprintln(w, "different experiments (fingerprints differ)")
+	}
+	if len(res.Fields) == 0 {
+		// Differing fingerprints with nothing to show. Every other hashed
+		// field is compared as a string and would have rendered, so an
+		// absent-versus-empty param is what is left.
+		fmt.Fprintln(w, "\nNo field differs in this view. For fingerprints that differ, that")
+		fmt.Fprintln(w, "means a param is absent on one run and set to the empty string on")
+		fmt.Fprintln(w, "the other: those hash differently but render the same here. Run")
+		fmt.Fprintln(w, "`rlctl show` on each id to see which.")
+		return
+	}
+	fmt.Fprintf(w, "\n%-24s  %-12s  %-20s  %s\n", "FIELD", "KIND", "A", "B")
+	for _, f := range res.Fields {
+		fmt.Fprintf(w, "%-24s  %-12s  %-20s  %s\n", f.Name, f.Kind, or(f.A, "—"), or(f.B, "—"))
+	}
+	if res.Unattributable {
+		fmt.Fprintln(w, "\nThese runs describe the same experiment but measured differently.")
+		fmt.Fprintln(w, "Something that affected the result is not captured in the record.")
+	}
 }
 
 func cmdSpread(args []string) error {
