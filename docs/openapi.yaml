@@ -1,0 +1,598 @@
+openapi: 3.0.3
+info:
+  title: run-ledger
+  description: >
+    Content-addressed ledger for experiment runs. Identity fields (project,
+    git_commit, git_dirty, config_hash, dataset_version, model_version, seed,
+    params) determine a run's fingerprint; provenance fields (host, device,
+    framework_version, status, timestamps, checkpoint_uri, metrics) record
+    what happened without affecting it. See the repository README for the
+    full model.
+  version: "1.0"
+  license:
+    name: MIT
+servers:
+  - url: "{baseUrl}"
+    variables:
+      baseUrl:
+        default: http://localhost:8080
+
+security:
+  - bearerAuth: []
+  - {}
+
+paths:
+  /runs:
+    post:
+      operationId: recordRun
+      summary: Record a run
+      description: >
+        The server computes the fingerprint from the identity fields and
+        assigns run_id when the caller does not supply one. Unknown JSON
+        fields are rejected.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunInput"
+            example:
+              project: demo
+              git_commit: a1b2c3d
+              git_dirty: false
+              config_hash: cfg1
+              dataset_version: v1
+              model_version: v1
+              seed: 1
+              params:
+                lr: "3e-4"
+              device: cpu
+              framework_version: torch-2.3.0
+              status: created
+      responses:
+        "201":
+          description: Run recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: Invalid run record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Conflicting run already recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      operationId: listRuns
+      summary: List runs
+      description: Paginated, newest-first by started_at then run_id.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: project
+          in: query
+          schema:
+            type: string
+        - name: git_commit
+          in: query
+          schema:
+            type: string
+        - name: fingerprint
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/Status"
+        - name: device
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Page size. Defaults to 50, capped at 500.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+        - name: cursor
+          in: query
+          description: >
+            Opaque pagination token from a previous page's next_cursor.
+            Format is not part of the API contract.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: A page of runs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunPage"
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /runs/{id}:
+    get:
+      operationId: getRun
+      summary: Get one run
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: The run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "404":
+          description: No run with that id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      operationId: updateRun
+      summary: Update a run's provenance
+      description: >
+        Moves a run's provenance forward: status, ended_at, checkpoint_uri,
+        metrics, host, device, framework_version. Status transitions are
+        restricted to created -> running -> {succeeded, failed, cancelled};
+        a terminal status cannot be left. Identity fields may be included
+        only to confirm they are unchanged -- sending one that differs from
+        the stored value is rejected as a conflict rather than silently
+        ignored.
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunPatch"
+            example:
+              status: succeeded
+              ended_at: "2026-08-28T12:00:00Z"
+              checkpoint_uri: s3://bucket/ckpt
+              metrics:
+                loss: 0.42
+      responses:
+        "200":
+          description: The updated run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "400":
+          description: Invalid patch, or an illegal status transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No run with that id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Identity field in the patch conflicts with the stored run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /compare:
+    get:
+      operationId: compareRuns
+      summary: Structured diff of two runs
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: a
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: b
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The diff
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CompareResponse"
+        "400":
+          description: Missing a or b
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Run a or b not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /fingerprints:
+    get:
+      operationId: listFingerprintSpread
+      summary: Fingerprints with repeats, ranked by widest relative metric spread
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: project
+          in: query
+          description: Restrict to one project; omitted ranks across every project.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ranked spread groups
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpreadGroupList"
+
+  /fingerprints/{fingerprint}:
+    get:
+      operationId: getFingerprintSpread
+      summary: Spread summary for one fingerprint
+      security:
+        - bearerAuth: []
+        - {}
+      parameters:
+        - name: fingerprint
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: >
+            The spread group for this fingerprint, including no_repeats for
+            a lone run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SpreadGroup"
+        "404":
+          description: No run recorded with this fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Process is up
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok\n"
+
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness probe
+      description: Ready means the store answered a call, not just that the process is up.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Store is answering
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "ok\n"
+        "503":
+          description: Store did not answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Self-metrics in Prometheus exposition format
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Optional. Unset by default (single-user local ledger). When
+        RUNLEDGER_TOKEN / RUNLEDGER_READ_TOKEN is configured, writes need the
+        write token and reads accept either token.
+
+  parameters:
+    RunID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+
+  schemas:
+    Status:
+      type: string
+      enum: [created, running, succeeded, failed, cancelled]
+
+    RunInput:
+      type: object
+      additionalProperties: false
+      required: [project, git_commit]
+      properties:
+        project:
+          type: string
+        git_commit:
+          type: string
+        git_dirty:
+          type: boolean
+        config_hash:
+          type: string
+          description: Required when git_dirty is true -- a dirty tree alone does not describe what ran.
+        dataset_version:
+          type: string
+        model_version:
+          type: string
+        seed:
+          type: integer
+          format: int64
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        run_id:
+          type: string
+          description: Usually left unset; the server assigns one from the fingerprint.
+        host:
+          type: string
+        device:
+          type: string
+        framework_version:
+          type: string
+        status:
+          $ref: "#/components/schemas/Status"
+        started_at:
+          type: string
+          format: date-time
+          description: Defaults to the server's receive time when omitted.
+        ended_at:
+          type: string
+          format: date-time
+        checkpoint_uri:
+          type: string
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+
+    Run:
+      allOf:
+        - $ref: "#/components/schemas/RunInput"
+        - type: object
+          properties:
+            run_id:
+              type: string
+            fingerprint:
+              type: string
+              description: Content-addressed hash of the identity fields, computed by the server.
+            started_at:
+              type: string
+              format: date-time
+
+    RunPatch:
+      type: object
+      additionalProperties: false
+      description: >
+        Every field is optional; only fields present in the request are
+        applied. Identity fields may be sent only to confirm they match the
+        stored run.
+      properties:
+        project:
+          type: string
+        git_commit:
+          type: string
+        git_dirty:
+          type: boolean
+        config_hash:
+          type: string
+        dataset_version:
+          type: string
+        model_version:
+          type: string
+        seed:
+          type: integer
+          format: int64
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        status:
+          $ref: "#/components/schemas/Status"
+        ended_at:
+          type: string
+          format: date-time
+        checkpoint_uri:
+          type: string
+        host:
+          type: string
+        device:
+          type: string
+        framework_version:
+          type: string
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
+
+    RunPage:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Run"
+        count:
+          type: integer
+        limit:
+          type: integer
+        next_cursor:
+          type: string
+          description: Present only when more rows may follow this page.
+
+    CompareField:
+      type: object
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+          enum: [identity, provenance, metric]
+        a:
+          type: string
+        b:
+          type: string
+
+    CompareResult:
+      type: object
+      properties:
+        a:
+          type: string
+          description: run_id of the first run
+        b:
+          type: string
+          description: run_id of the second run
+        same_experiment:
+          type: boolean
+          description: True when the two runs' fingerprints match.
+        fields:
+          type: array
+          items:
+            $ref: "#/components/schemas/CompareField"
+
+    CompareResponse:
+      type: object
+      properties:
+        result:
+          $ref: "#/components/schemas/CompareResult"
+        unattributable:
+          type: boolean
+          description: >
+            True when same_experiment is true but a metric field still
+            differs -- the record claims two identical experiments that
+            measured differently.
+
+    MetricStat:
+      type: object
+      properties:
+        count:
+          type: integer
+        min:
+          type: number
+        max:
+          type: number
+        mean:
+          type: number
+        stddev:
+          type: number
+
+    ProvenanceDiff:
+      type: object
+      properties:
+        field:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+
+    SpreadGroup:
+      type: object
+      properties:
+        fingerprint:
+          type: string
+        run_ids:
+          type: array
+          items:
+            type: string
+        count:
+          type: integer
+        no_repeats:
+          type: boolean
+          description: True when exactly one run has this fingerprint; metrics is omitted in that case.
+        metrics:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/MetricStat"
+        provenance:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProvenanceDiff"
+
+    SpreadGroupList:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: "#/components/schemas/SpreadGroup"
+        count:
+          type: integer
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
