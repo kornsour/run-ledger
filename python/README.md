@@ -157,12 +157,25 @@ for group in runledger.spread(project="demo"):
 
 # Or one experiment's own repeats.
 group, = runledger.spread(fingerprint="a1b2c3...")
+
+# What actually differs between two runs -- the ledger's headline question.
+diff = runledger.compare(a1, a2)  # ids, or dicts with a run_id, either works
+print(diff["same_experiment"], diff["unattributable"])
+for field in diff["fields"]:
+    print(field["kind"], field["name"], field["a"], "->", field["b"])
 ```
 
 `runs()` walks every page by default; pass `limit=` to bound it. Both read
 from `$RUNLEDGER_ADDR` and `$RUNLEDGER_TOKEN` the same way `Run.start()` does
 — the token is never a keyword argument, for the same reason it is never an
 `rlctl` flag.
+
+`compare()` is the natural next step after `spread()` turns up a group with
+a nonzero stddev: `group["run_ids"]` names the runs, and `compare()` says
+which fields actually differ between two of them, each tagged `identity`,
+`provenance`, or `metric`. `unattributable` is `true` when `same_experiment`
+is `true` but the metrics still moved — same identity, different result,
+nothing in the record explains why.
 
 These return plain dicts, straight off the wire. The package still has no
 dependencies; if you want a frame, you have lost nothing:
@@ -186,14 +199,15 @@ The two halves fail differently, on purpose:
 | | on an unreachable ledger |
 |---|---|
 | `Run.start()` | `RuntimeWarning` + spool to disk, never raises |
-| `runs()` / `run()` / `spread()` | raises `LedgerUnreachableError` |
+| `runs()` / `run()` / `spread()` / `compare()` | raises `LedgerUnreachableError` |
 
 Recording must never fail an expensive training job, so the write path
 degrades. A read has no such constraint, and the opposite default is the
 safe one: silently returning `[]` when the server is down would answer "how
 did my experiments do?" with "they didn't". `RunNotFoundError` (a subclass of
-`LedgerError`, as is `LedgerUnreachableError`) is raised for an unknown run id
-or fingerprint.
+`LedgerError`, as is `LedgerUnreachableError`) is raised for an unknown run
+id or fingerprint — `compare()` names which side, `a` or `b`, when it is the
+one that doesn't exist.
 
 ## Why one HTTP call, not two
 
