@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.join(_HERE, ".."))
 
 import runledger  # noqa: E402
 from runledger_dashboard import (  # noqa: E402
+    diff_cell,
     group_runs,
     list_projects,
     pair_diff,
@@ -253,3 +254,20 @@ class ErrorsPropagateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiffCell(unittest.TestCase):
+    """A field the run never recorded and one it recorded as empty are
+    different claims, and must not render alike. See ADR 0011."""
+
+    def test_absent_renders_as_an_em_dash(self):
+        self.assertEqual(diff_cell(None), "—")
+
+    def test_empty_renders_as_visible_quotes(self):
+        self.assertEqual(diff_cell(""), '""')
+
+    def test_absent_and_empty_do_not_collide(self):
+        self.assertNotEqual(diff_cell(None), diff_cell(""))
+
+    def test_a_value_passes_through(self):
+        self.assertEqual(diff_cell("cuda"), "cuda")

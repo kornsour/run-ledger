@@ -337,18 +337,20 @@ func renderDiff(w io.Writer, res compare.Result) {
 		fmt.Fprintln(w, "different experiments (fingerprints differ)")
 	}
 	if len(res.Fields) == 0 {
-		// Differing fingerprints with nothing to show. Every other hashed
-		// field is compared as a string and would have rendered, so an
-		// absent-versus-empty param is what is left.
-		fmt.Fprintln(w, "\nNo field differs in this view. For fingerprints that differ, that")
-		fmt.Fprintln(w, "means a param is absent on one run and set to the empty string on")
-		fmt.Fprintln(w, "the other: those hash differently but render the same here. Run")
-		fmt.Fprintln(w, "`rlctl show` on each id to see which.")
+		// Fingerprints differ and nothing rendered. compare.Runs covers
+		// every input lineage.Run.Compute hashes, so reaching this means
+		// the two have drifted apart -- not something a reader can act on,
+		// but far better said out loud than papered over with a verdict of
+		// "identical". It was reachable until params were compared by
+		// presence rather than through a map index.
+		fmt.Fprintln(w, "\nNo field differs, which should not be possible for fingerprints")
+		fmt.Fprintln(w, "that differ: the diff covers every field the fingerprint hashes.")
+		fmt.Fprintln(w, "Please report this, with the output of `rlctl show` for each id.")
 		return
 	}
 	fmt.Fprintf(w, "\n%-24s  %-12s  %-20s  %s\n", "FIELD", "KIND", "A", "B")
 	for _, f := range res.Fields {
-		fmt.Fprintf(w, "%-24s  %-12s  %-20s  %s\n", f.Name, f.Kind, or(f.A, "—"), or(f.B, "—"))
+		fmt.Fprintf(w, "%-24s  %-12s  %-20s  %s\n", f.Name, f.Kind, cell(f.A), cell(f.B))
 	}
 	if res.Unattributable {
 		fmt.Fprintln(w, "\nThese runs describe the same experiment but measured differently.")
@@ -504,9 +506,16 @@ func trunc(s string, n int) string {
 	return s[:n]
 }
 
-func or(s, def string) string {
-	if s == "" {
-		return def
+// cell renders one side of a diff row. A nil value was never recorded; a
+// pointer to "" is a value the run actually carried, which only a param
+// can currently be (ADR 0011). The two used to print the same em dash.
+func cell(v *string) string {
+	switch {
+	case v == nil:
+		return "—"
+	case *v == "":
+		return `""`
+	default:
+		return *v
 	}
-	return s
 }

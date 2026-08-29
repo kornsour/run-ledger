@@ -108,30 +108,34 @@ that fires on thin evidence would train people to ignore it.
 
 ## What this example is evidence for
 
-Running it makes two gaps in the current data model concrete:
+Running it makes two things concrete.
 
-1. **`""` and "not recorded" are the same value on the wire**, for
-   `config_hash`, `dataset_version`, `model_version`, `host`, `device`, and
-   `framework_version` — a known gap the struct comment in
-   [`internal/lineage/run.go`](../internal/lineage/run.go) already
-   acknowledges. For the three identity fields it is worse than cosmetic: a
-   run that genuinely had no dataset version and one whose client dropped it
-   produce the *same fingerprint*, so they are grouped as the same
-   experiment and their metric difference is reported as unattributable.
-   That is a false positive on the single claim this ledger makes.
+1. **A capture gap is invisible from one record.** For `config_hash`,
+   `dataset_version`, `model_version`, `host`, `device`, and
+   `framework_version`, an empty value means "not recorded" — that is now a
+   stated invariant
+   ([ADR 0011](../docs/adr/0011-empty-string-means-not-recorded.md)), not a
+   gap, because none of those fields has a meaningful empty value. So *was
+   this captured?* is answerable exactly. What is not answerable from the
+   record alone is *why* it is empty: a run that genuinely had no dataset
+   version and one whose client dropped it look the same. That is a fact
+   about the recording process, not about the experiment, which is why the
+   detector here reaches for the peer group rather than for the field.
 
-2. **The same conflation reaches the diff.** Two runs whose params are `{}`
-   and `{"foo": ""}` fingerprint differently — `Compute` writes only the
-   keys that are present — but `compare.Runs` renders both sides of
-   `params.foo` as `""`, so no field is emitted. `GET /v1/comparisons`
-   answers `same_experiment: false` with `fields: null`.
+2. **Params are the case where presence is real.** A param key can be
+   genuinely present with an empty value, and `lineage.Run.Compute` already
+   hashes `{}` and `{"foo": ""}` differently. `compare.Runs` used to read
+   both sides through a map index that yields `""` for a missing key, so it
+   emitted no field: `GET /v1/comparisons` answered `same_experiment: false`
+   with `fields: null`, and `rlctl diff` printed **"the two records are
+   identical"** — the opposite of what the server had said.
 
-   `rlctl diff` used to key its verdict off `len(Fields)` and printed **"the
-   two records are identical"** for that pair — the opposite of what the
-   server had just said. That half is fixed: the verdict now comes from
-   `SameExperiment`, and the no-rows case explains why a real difference has
-   nothing to show. The underlying conflation in `compare.Runs` remains, and
-   is the same gap as (1): a diff still cannot name which param it was.
+   Both halves are fixed. The diff reads presence from the map and reports
+   `params.foo` as `—` against `""`; the API returns `"a": null, "b": ""`;
+   and the verdict now comes from `SameExperiment` rather than from whether
+   any field happened to render.
 
-The detector in this folder is the best available answer while both hold.
-It is a workaround for (1), not a substitute for fixing it.
+The detector remains a heuristic for (1), and says "likely" rather than
+"is". Making it exact would mean recording what the client *attempted* to
+capture — a declaration alongside the run, kept out of the fingerprint —
+which nothing in the ledger asks for yet.

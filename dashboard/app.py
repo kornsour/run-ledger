@@ -168,6 +168,7 @@ def _(mo, runs):
 def _(a_picker, b_picker, mo, server_input):
     from runledger import LedgerError as _LedgerError
 
+    from runledger_dashboard import diff_cell as _cell
     from runledger_dashboard import pair_diff
 
     if a_picker.value == b_picker.value:
@@ -188,7 +189,20 @@ def _(a_picker, b_picker, mo, server_input):
         [
             mo.md(verdict),
             mo.ui.table(
-                [{"field": f["name"], "kind": f["kind"], "a": f["a"], "b": f["b"]} for f in diff["fields"]],
+                [
+                    {
+                        "field": f["name"],
+                        "kind": f["kind"],
+                        # null means the run never recorded the field; ""
+                        # means it recorded an empty value. Passing null
+                        # straight through renders a blank cell, which reads
+                        # as the empty value it is not -- the same
+                        # conflation rlctl's `cell` avoids. See ADR 0011.
+                        "a": _cell(f["a"]),
+                        "b": _cell(f["b"]),
+                    }
+                    for f in diff["fields"]
+                ],
                 selection=None,
             )
             if diff["fields"]

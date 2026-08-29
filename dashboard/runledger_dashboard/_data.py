@@ -122,3 +122,19 @@ def pair_diff(
     :raises runledger.LedgerUnreachableError: if the ledger cannot be reached.
     """
     return runledger.compare(a, b, server=server, timeout=timeout)
+
+
+def diff_cell(value: Optional[str]) -> str:
+    """Render one side of a ``pair_diff`` field for display.
+
+    ``None`` means the run never recorded the field; ``""`` means it
+    recorded an empty value, which only a param can be (ADR 0011). Passing
+    ``None`` straight into a table renders a blank cell, which reads as the
+    empty value it is not -- the same conflation ``rlctl``'s ``cell``
+    avoids, and the reason both spellings used to be indistinguishable.
+    """
+    if value is None:
+        return "\u2014"
+    if value == "":
+        return '""'
+    return value

@@ -2,6 +2,7 @@ package compare
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/kornsour/run-ledger/internal/lineage"
@@ -61,8 +62,11 @@ func TestAbsentMetricIsNotZero(t *testing.T) {
 	if len(res.Fields) != 1 {
 		t.Fatalf("want one difference, got %+v", res.Fields)
 	}
-	if res.Fields[0].A != "0" || res.Fields[0].B != "" {
-		t.Fatalf("a recorded zero must not read the same as an absent metric: %+v", res.Fields[0])
+	if got := res.Fields[0].A; got == nil || *got != "0" {
+		t.Fatalf("a recorded zero must render as a value: %+v", res.Fields[0])
+	}
+	if res.Fields[0].B != nil {
+		t.Fatalf("an absent metric must be nil, not a value: %+v", res.Fields[0])
 	}
 }
 
@@ -100,9 +104,86 @@ func TestFieldOrderIsDeterministic(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		got := Runs(a, b).Fields
 		for j := range first {
-			if got[j] != first[j] {
+			// reflect.DeepEqual, not ==: Field carries *string, so ==
+			// would compare pointer identity and fail on every call.
+			if !reflect.DeepEqual(got[j], first[j]) {
 				t.Fatal("diff field order is not deterministic")
 			}
 		}
+	}
+}
+
+// The bug this presence handling exists for. Two runs whose params are {}
+// and {"foo": ""} fingerprint differently, because Run.Compute writes only
+// the keys that are present. Reading both sides through a bare map index
+// yielded "" for each and emitted no field at all, so the API answered
+// same_experiment:false with fields:null and rlctl called them identical.
+func TestParamAbsentIsNotParamEmpty(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.Params = nil
+	b.Params = map[string]string{"foo": ""}
+
+	res := Runs(a, b)
+	if res.SameExperiment {
+		t.Fatal("an absent param and an empty one hash differently, so these are different experiments")
+	}
+	var got *Field
+	for i := range res.Fields {
+		if res.Fields[i].Name == "params.foo" {
+			got = &res.Fields[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("want params.foo reported as a difference, got %+v", res.Fields)
+	}
+	if got.A != nil {
+		t.Errorf("a run that never set the param must report nil, got %q", *got.A)
+	}
+	if got.B == nil || *got.B != "" {
+		t.Errorf("a run that set the param to empty must report a value, got %v", got.B)
+	}
+}
+
+// "" and "not recorded" are the same claim for the scalar fields, so the
+// diff reports the empty one as absent rather than as a value of "".
+// ADR 0011 is what licenses that normalization.
+func TestEmptyScalarFieldsReportAsAbsent(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.Device = "cuda"
+	b.Device = ""
+
+	for _, f := range Runs(a, b).Fields {
+		if f.Name != "device" {
+			continue
+		}
+		if f.B != nil {
+			t.Fatalf("an unrecorded device must report nil, got %q", *f.B)
+		}
+		return
+	}
+	t.Fatal("want device reported as a difference")
+}
+
+// compare must not answer "same experiment" independently of the stored
+// fingerprint the rest of the ledger groups by. Recomputing here gave a
+// second answer to the same question, which stays invisible only while
+// Run.Compute never changes -- and ADR 0004 exists because it will.
+func TestSameExperimentPrefersTheStoredFingerprint(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.Fingerprint, b.Fingerprint = "stored-fp", "stored-fp"
+	a.Seed, b.Seed = 1, 2 // Compute would disagree; the store is authoritative.
+
+	if !SameExperiment(a, b) {
+		t.Error("want the stored fingerprint to decide when both runs carry one")
+	}
+	if !Runs(a, b).SameExperiment {
+		t.Error("Runs must use the same source of truth as SameExperiment")
+	}
+
+	// A run that has not been through a store has no fingerprint to trust.
+	c, d := run("c"), run("d")
+	d.Seed = 99
+	if SameExperiment(c, d) {
+		t.Error("want Compute as the fallback when a fingerprint is missing")
 	}
 }

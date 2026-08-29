@@ -13,7 +13,7 @@ import (
 // TestRenderDiffDifferentExperimentWithNoRenderedFields -- and the earlier
 // ordering reported the opposite of what the server said.
 func TestRenderDiffVerdictFollowsSameExperiment(t *testing.T) {
-	field := []compare.Field{{Name: "seed", Kind: compare.KindIdentity, A: "1", B: "2"}}
+	field := []compare.Field{{Name: "seed", Kind: compare.KindIdentity, A: ptr("1"), B: ptr("2")}}
 
 	for _, tc := range []struct {
 		name   string
@@ -72,10 +72,11 @@ func TestRenderDiffDifferentExperimentWithNoRenderedFields(t *testing.T) {
 	if !strings.Contains(out, "different experiments (fingerprints differ)") {
 		t.Errorf("want the differing-fingerprint verdict, got:\n%s", out)
 	}
-	// The empty table would be useless on its own; the reader needs to know
-	// why a real difference has nothing to show.
-	if !strings.Contains(out, "empty string") {
-		t.Errorf("want an explanation of the absent-versus-empty param case, got:\n%s", out)
+	// An empty table would be useless on its own. Since compare.Runs covers
+	// every hashed field, reaching this state is a bug in the ledger, and
+	// saying so is more use to the reader than a bare verdict.
+	if !strings.Contains(out, "should not be possible") {
+		t.Errorf("want the invariant violation called out, got:\n%s", out)
 	}
 	if strings.Contains(out, "FIELD") {
 		t.Errorf("no rows to show, so no table header should print:\n%s", out)
@@ -83,7 +84,7 @@ func TestRenderDiffDifferentExperimentWithNoRenderedFields(t *testing.T) {
 }
 
 func TestRenderDiffUnattributableNoteOnlyWhenFlagged(t *testing.T) {
-	metric := []compare.Field{{Name: "metrics.loss", Kind: compare.KindMetric, A: "0.42", B: "0.51"}}
+	metric := []compare.Field{{Name: "metrics.loss", Kind: compare.KindMetric, A: ptr("0.42"), B: ptr("0.51")}}
 	const note = "not captured in the record"
 
 	var flagged bytes.Buffer
@@ -99,15 +100,28 @@ func TestRenderDiffUnattributableNoteOnlyWhenFlagged(t *testing.T) {
 	}
 }
 
-// An absent value renders as an em dash so it is not mistaken for a value
-// the run actually had.
-func TestRenderDiffMarksAbsentValues(t *testing.T) {
+// A value the run never recorded and a value it recorded as empty are
+// different claims, and must not print the same glyph. Before Field
+// carried presence, both arrived as "" and both rendered as an em dash.
+func TestRenderDiffDistinguishesAbsentFromEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	renderDiff(&buf, compare.Result{
 		SameExperiment: true,
-		Fields:         []compare.Field{{Name: "metrics.auc", Kind: compare.KindMetric, A: "0.94", B: ""}},
+		Fields: []compare.Field{
+			{Name: "metrics.auc", Kind: compare.KindMetric, A: ptr("0.94"), B: nil},
+			{Name: "params.tag", Kind: compare.KindIdentity, A: nil, B: ptr("")},
+		},
 	})
-	if !strings.Contains(buf.String(), "—") {
-		t.Errorf("want an em dash for the absent metric, got:\n%s", buf.String())
+	out := buf.String()
+	for _, want := range []string{"metrics.auc", "0.94", "—", `params.tag`, `""`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("want %q in output, got:\n%s", want, out)
+		}
+	}
+	// The absent side and the empty side must not read alike.
+	if strings.Count(out, "—") != 2 {
+		t.Errorf("want exactly the two absent cells marked, got:\n%s", out)
 	}
 }
+
+func ptr(s string) *string { return &s }
