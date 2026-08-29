@@ -1,4 +1,4 @@
-"""Tests for the read half of the client: runs(), run(), spread().
+"""Tests for the read half of the client: runs(), run(), spread(), compare().
 
 Like test_run.py, these run against a tiny in-process stand-in for the
 server rather than needing Go, a build, or a live process. The fake
@@ -84,6 +84,30 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(404, {"error": 'no run recorded with fingerprint "missing"'})
             else:
                 self._json(200, {"fingerprint": fp, "count": 1, "no_repeats": True})
+            return
+
+        if parsed.path == "/v1/comparisons":
+            a, b = query.get("a"), query.get("b")
+            # Mirrors the server: each side is checked, and not found names
+            # which one, the same way GET /runs/{id} names none (there is
+            # only one id to be wrong about there).
+            if a == "missing":
+                self._json(404, {"error": "run a: run not found"})
+            elif b == "missing":
+                self._json(404, {"error": "run b: run not found"})
+            else:
+                self._json(
+                    200,
+                    {
+                        "a": a,
+                        "b": b,
+                        "same_experiment": a == b,
+                        "fields": [] if a == b else [
+                            {"name": "metrics.loss", "kind": "metric", "a": "0.1", "b": "0.2"}
+                        ],
+                        "unattributable": a != b,
+                    },
+                )
             return
 
         self._json(500, {"error": "unexpected path"})
@@ -192,6 +216,43 @@ class SpreadTests(unittest.TestCase):
         with _FakeLedger() as led:
             with self.assertRaises(runledger.RunNotFoundError):
                 runledger.spread(fingerprint="missing", server=led.addr)
+
+
+class CompareTests(unittest.TestCase):
+    def test_returns_the_diff(self):
+        with _FakeLedger() as led:
+            got = runledger.compare("run-a", "run-b", server=led.addr)
+        self.assertFalse(got["same_experiment"])
+        self.assertTrue(got["unattributable"])
+        self.assertEqual(got["fields"][0]["name"], "metrics.loss")
+
+    def test_sends_both_ids_as_query_params(self):
+        with _FakeLedger() as led:
+            runledger.compare("run-a", "run-b", server=led.addr)
+        self.assertEqual(led.requests[0]["path"], "/v1/comparisons")
+        self.assertEqual(led.requests[0]["query"], {"a": "run-a", "b": "run-b"})
+
+    def test_accepts_run_dicts_as_well_as_ids(self):
+        # A caller who just listed runs is holding dicts, not bare ids.
+        with _FakeLedger() as led:
+            runledger.compare(
+                {"run_id": "run-a", "project": "demo"},
+                {"run_id": "run-b", "project": "demo"},
+                server=led.addr,
+            )
+        self.assertEqual(led.requests[0]["query"], {"a": "run-a", "b": "run-b"})
+
+    def test_unknown_a_names_a_in_the_error(self):
+        with _FakeLedger() as led:
+            with self.assertRaises(runledger.RunNotFoundError) as ctx:
+                runledger.compare("missing", "run-b", server=led.addr)
+        self.assertIn("run a", str(ctx.exception))
+
+    def test_unknown_b_names_b_in_the_error(self):
+        with _FakeLedger() as led:
+            with self.assertRaises(runledger.RunNotFoundError) as ctx:
+                runledger.compare("run-a", "missing", server=led.addr)
+        self.assertIn("run b", str(ctx.exception))
 
 
 class ReadsRaiseRatherThanDegradeTests(unittest.TestCase):

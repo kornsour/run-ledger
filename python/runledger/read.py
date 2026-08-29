@@ -1,4 +1,4 @@
-"""Reading the ledger back: runs(), spread(), and run().
+"""Reading the ledger back: runs(), spread(), run(), and compare().
 
 Design note -- why these raise where Run does not
 -------------------------------------------------
@@ -237,3 +237,43 @@ def spread(
     page = _get("/fingerprints", {"project": project}, server=server, timeout=timeout)
     # The collection returns null rather than [] when nothing qualifies.
     return page.get("groups") or []
+
+
+def _run_id(run_or_id: Any) -> str:
+    """Accept either a run id or a run dict (e.g. a row from ``runs()`` or
+    ``spread()[i]["run_ids"][j]``) -- a caller who just listed runs is
+    holding dicts, and pulling ``run_id`` back out for them costs nothing.
+    """
+    if isinstance(run_or_id, dict):
+        return str(run_or_id["run_id"])
+    return str(run_or_id)
+
+
+def compare(
+    a: Any,
+    b: Any,
+    *,
+    server: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> Dict[str, Any]:
+    """Structured diff of two runs -- the ledger's headline question, "were
+    these the same experiment, and if so why did they measure differently?"
+
+    ``a`` and ``b`` are each either a run id, or a run dict (anything with a
+    ``run_id`` key, such as a row from ``runs()``). Returns the response
+    exactly as the wire delivers it: ``same_experiment``, a ``fields`` list
+    of every field the two runs differ on (each with a ``kind`` of
+    ``identity``, ``provenance``, or ``metric``), and ``unattributable`` --
+    true when the runs are the same experiment (``same_experiment``) but
+    still measured differently, so nothing in the record explains the gap.
+
+    :raises RunNotFoundError: if ``a`` or ``b`` matches no recorded run. The
+        message names which one -- the server distinguishes them.
+    :raises LedgerUnreachableError: if the ledger cannot be reached.
+    """
+    return _get(
+        "/comparisons",
+        {"a": _run_id(a), "b": _run_id(b)},
+        server=server,
+        timeout=timeout,
+    )
