@@ -111,6 +111,39 @@ var migrations = []string{
 	// anything?" grouping.
 	`CREATE INDEX IF NOT EXISTS idx_runs_project_started ON runs (project, started_at_ns DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_runs_fingerprint ON runs (fingerprint)`,
+	// ADR 0013: Compute now normalizes numeric param spellings before
+	// hashing, which changes what Fingerprint means for any run recorded
+	// from here on. Every row that already exists at the moment this
+	// migration runs was fingerprinted under the old, unnormalized contract
+	// -- ADR 0004 is explicit that such a change must never silently
+	// reinterpret what's already stored, so this only adds a column, never
+	// touches the fingerprint column itself. DEFAULT 1 backfills every
+	// pre-existing row to lineage.FingerprintVersionLegacy in the same
+	// statement that adds the column, so there is no window where a
+	// pre-migration row reads back with an undefined version. Every row
+	// inserted after this migration gets an explicit value from the caller
+	// (api.record stamps lineage.CurrentFingerprintVersion), so the default
+	// only ever fires for rows that predate the column.
+	//
+	// Not declared NOT NULL: this DuckDB version rejects ADD COLUMN with an
+	// inline column constraint ("Adding columns with constraints not yet
+	// supported"). DEFAULT alone still backfills every existing row to a
+	// real value, and Record always supplies an explicit
+	// FingerprintVersion for every future insert, so a NULL in this column
+	// should never occur in practice -- the constraint would only catch a
+	// bug that got this far already writing bad data, not prevent one.
+	`ALTER TABLE runs ADD COLUMN fingerprint_version INTEGER DEFAULT 1`,
+	// ADR 0015: submitter_claim and job_id record who (self-asserted) and
+	// what launching job recorded a run. Both are provenance -- neither
+	// feeds Fingerprint -- so, unlike fingerprint_version above, a
+	// pre-existing row needs no reinterpretation: it simply never had this
+	// information captured, and DEFAULT '' backfills it to exactly that
+	// claim ("" means "not recorded", per ADR 0011's rule, extended to
+	// these two fields by ADR 0015). Two separate ALTER TABLE statements,
+	// not one, because each migration entry in this slice is one statement
+	// applied atomically -- see migrate's per-entry transaction below.
+	`ALTER TABLE runs ADD COLUMN submitter_claim VARCHAR DEFAULT ''`,
+	`ALTER TABLE runs ADD COLUMN job_id VARCHAR DEFAULT ''`,
 }
 
 func (d *DuckDB) migrate(ctx context.Context) error {
@@ -190,12 +223,14 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO runs (
 			run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, submitter_claim, job_id, status, started_at_ns,
+			ended_at_ns, checkpoint_uri
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Project, r.GitCommit, r.GitDirty, r.ConfigHash, r.DatasetVersion,
-		r.ModelVersion, r.Seed, r.Fingerprint, r.Host, r.Device, r.FrameworkVersion,
-		string(r.Status), r.StartedAt.UnixNano(), endedAt, r.CheckpointURI,
+		r.ModelVersion, r.Seed, r.Fingerprint, r.FingerprintVersion, r.Host, r.Device,
+		r.FrameworkVersion, r.SubmitterClaim, r.JobID, string(r.Status), r.StartedAt.UnixNano(),
+		endedAt, r.CheckpointURI,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting run: %w", err)
@@ -246,10 +281,11 @@ func (d *DuckDB) Update(ctx context.Context, runID string, p Patch) (lineage.Run
 	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE runs SET status = ?, ended_at_ns = ?, checkpoint_uri = ?,
-			host = ?, device = ?, framework_version = ?
+			host = ?, device = ?, framework_version = ?, submitter_claim = ?, job_id = ?
 		WHERE run_id = ?`,
 		string(updated.Status), endedAt, updated.CheckpointURI,
-		updated.Host, updated.Device, updated.FrameworkVersion, runID,
+		updated.Host, updated.Device, updated.FrameworkVersion,
+		updated.SubmitterClaim, updated.JobID, runID,
 	); err != nil {
 		return lineage.Run{}, fmt.Errorf("updating run: %w", err)
 	}
@@ -286,8 +322,9 @@ func (d *DuckDB) Get(ctx context.Context, runID string) (lineage.Run, error) {
 func (d *DuckDB) get(ctx context.Context, q queryer, runID string) (lineage.Run, error) {
 	r, err := scanRun(q.QueryRowContext(ctx, `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, submitter_claim, job_id, status, started_at_ns,
+			ended_at_ns, checkpoint_uri
 		FROM runs WHERE run_id = ?`, runID))
 	if err != nil {
 		return lineage.Run{}, err
@@ -310,8 +347,8 @@ func scanRun(row *sql.Row) (lineage.Run, error) {
 	var endedAtNS sql.NullInt64
 	err := row.Scan(
 		&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
-		&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.Host, &r.Device, &r.FrameworkVersion,
-		&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+		&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
+		&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 	)
 	if err == sql.ErrNoRows {
 		return lineage.Run{}, ErrNotFound
@@ -383,6 +420,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	add("fingerprint", query.Fingerprint)
 	add("status", string(query.Status))
 	add("device", query.Device)
+	add("submitter_claim", query.SubmitterClaim)
+	add("job_id", query.JobID)
 	if !query.Since.IsZero() {
 		where = append(where, "started_at_ns >= ?")
 		args = append(args, query.Since.UnixNano())
@@ -401,8 +440,9 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 
 	sqlStr := `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, submitter_claim, job_id, status, started_at_ns,
+			ended_at_ns, checkpoint_uri
 		FROM runs`
 	if len(where) > 0 {
 		sqlStr += " WHERE " + strings.Join(where, " AND ")
@@ -431,8 +471,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		var endedAtNS sql.NullInt64
 		if err := rows.Scan(
 			&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
-			&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.Host, &r.Device, &r.FrameworkVersion,
-			&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+			&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
+			&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 		); err != nil {
 			rows.Close()
 			return Page{}, err

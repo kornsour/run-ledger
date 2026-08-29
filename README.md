@@ -34,6 +34,20 @@ Nondeterminism, an unpinned dependency, different hardware, a data race. The
 ledger cannot tell you which — but it can tell you that the explanation is not in
 the record, which is the point at which you go looking.
 
+That verdict is only as trustworthy as the identity fields feeding it.
+`dataset_version`, `model_version`, and `config_hash` are free strings the
+caller supplies — the server hashes them into the fingerprint exactly as
+given, and has no way to check that a run labelled `"v1"` saw the same bytes
+as another run labelled `"v1"`; it never sees the dataset, the weights, or
+the config file, only the label. So before chasing nondeterminism, rule out
+the cheaper explanation first: a relabeled or re-exported dataset under an
+unchanged label produces the exact same signature as real nondeterminism —
+same fingerprint, different metrics, `unattributable`. The explanation was
+in the record; the record was just wrong. See
+[`runledger.hash_dataset()`](python/README.md#deriving-dataset_version) if
+you want `dataset_version` derived from the data's own bytes instead of
+typed by hand.
+
 ## Try it
 
 ```bash
@@ -223,7 +237,7 @@ import runledger
 with runledger.Run.start(project="demo", seed=1, params={"lr": 3e-4}) as run:
     for step in range(steps):
         loss = train_step()
-        run.log_metric("loss", loss)
+        run.log_metric("loss", loss)  # overwrites -- only the final value is kept
 ```
 
 It captures the same git context `rlctl record` does — commit, dirty flag —
@@ -241,6 +255,19 @@ starts and `PATCH`es it to a terminal status when the run ends, so a
 `SIGTERM` is caught and recorded `failed`
 ([ADR 0014](docs/adr/0014-python-client-writes-running-then-patches-terminal.md),
 superseding [ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md)).
+
+**This is not a metric tracker, and does not try to be one.** `log_metric`
+overwrites — calling it every step, as above, keeps only the value from the
+last call for a given name, not a curve. run-ledger records what a run
+**was**: identity plus the final outcome, for deciding whether two runs
+were the same experiment. A tracker (W&B, MLflow, TensorBoard) records how a
+run **went**: the step-by-step curve, for watching training happen. Most
+setups want both, pointed at the same run — log the curve to a tracker,
+record the fingerprint and final metrics here. The boundary is what each
+side needs to answer its own question: a fingerprint only has to include
+what must match for two runs to count as the same experiment, and everything
+you want to watch move belongs on a dashboard instead, precisely because the
+fingerprint must not be sensitive to it.
 
 ```bash
 pip install -e ./python
@@ -318,6 +345,15 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   sending `""` to omitting a key from silently changing every fingerprint
   it produces. `params` is exempt — presence there is real and already
   hashed. ([ADR 0011](docs/adr/0011-empty-string-means-not-recorded.md))
+- **`unattributable` assumes the identity strings are honest.** `dataset_version`,
+  `model_version`, and `config_hash` are free strings the caller supplies; the
+  server has no way to verify that two runs labelled the same value actually
+  saw the same bytes, so a mislabelled or re-exported dataset produces the
+  identical signature as real nondeterminism — same fingerprint, different
+  metrics. Rule that out first. `runledger.hash_dataset()` derives
+  `dataset_version` from a dataset's own content instead of a typed label,
+  for callers who want that check to be possible — opt-in, client-side only,
+  no fingerprint contract change.
 - **A comparison reads the stored fingerprint, not a fresh one.** Recomputing
   it in `compare` gave a second, independent answer to the question
   `spread` already answers from the stored value. The two agree only while
@@ -385,6 +421,14 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   collection instead of a verb hanging off the root — and the query-param
   shape has somewhere to grow if comparing more than two runs ever matters.
   ([ADR 0010](docs/adr/0010-comparisons-is-a-resource-not-a-verb.md))
+- **Run attribution (`submitter_claim`, `job_id`) is provenance, not identity,
+  and `submitter_claim` is self-asserted.** The same experiment run by two
+  people is still the same experiment, so neither field feeds the
+  fingerprint. `RUNLEDGER_TOKEN` is one shared secret today, so the server
+  cannot attest who a caller is — `submitter_claim` is named to say plainly
+  that it is a claim, not a verified fact, until named per-caller tokens
+  exist.
+  ([ADR 0015](docs/adr/0015-run-attribution-is-provenance-self-asserted.md))
 
 ## Status
 

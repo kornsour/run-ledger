@@ -43,6 +43,8 @@ func TestProvenanceDifferenceDoesNotSplitTheExperiment(t *testing.T) {
 	a, b := run("a"), run("b")
 	b.Device = "cuda"
 	b.Host = "gpu-01"
+	b.SubmitterClaim = "bob"
+	b.JobID = "ci-42"
 	res := Runs(a, b)
 	if !res.SameExperiment {
 		t.Fatal("provenance must not affect the fingerprint")
@@ -51,6 +53,18 @@ func TestProvenanceDifferenceDoesNotSplitTheExperiment(t *testing.T) {
 		if f.Kind != KindProvenance {
 			t.Fatalf("unexpected %s difference: %+v", f.Kind, res.Fields)
 		}
+	}
+	var sawSubmitter, sawJob bool
+	for _, f := range res.Fields {
+		switch f.Name {
+		case "submitter_claim":
+			sawSubmitter = true
+		case "job_id":
+			sawJob = true
+		}
+	}
+	if !sawSubmitter || !sawJob {
+		t.Fatalf("want submitter_claim and job_id reported as provenance differences, got %+v", res.Fields)
 	}
 }
 
@@ -162,6 +176,30 @@ func TestEmptyScalarFieldsReportAsAbsent(t *testing.T) {
 		return
 	}
 	t.Fatal("want device reported as a difference")
+}
+
+// submitter_claim and job_id follow the same rule as device -- ADR 0015
+// extends ADR 0011's "empty means not recorded" policy to them.
+func TestEmptyAttributionFieldsReportAsAbsent(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.SubmitterClaim, a.JobID = "alice", "ci-1"
+	b.SubmitterClaim, b.JobID = "", ""
+
+	fields := Runs(a, b).Fields
+	for _, name := range []string{"submitter_claim", "job_id"} {
+		var found *Field
+		for i := range fields {
+			if fields[i].Name == name {
+				found = &fields[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("want %s reported as a difference, got %+v", name, fields)
+		}
+		if found.B != nil {
+			t.Fatalf("an unrecorded %s must report nil, got %q", name, *found.B)
+		}
+	}
 }
 
 // compare must not answer "same experiment" independently of the stored

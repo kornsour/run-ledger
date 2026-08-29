@@ -24,7 +24,12 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 			Project: project, GitCommit: "c" + id, ConfigHash: "cfg",
 			RunID: id, Status: lineage.StatusSucceeded, StartedAt: at, Device: "cpu",
 		}
+		// Fingerprint and FingerprintVersion are always stamped together --
+		// Compute always implements CurrentFingerprintVersion, so a run
+		// whose Fingerprint came from a fresh Compute() call must record
+		// that version, the same pairing api.record does for a real request.
 		r.Fingerprint = r.Compute()
+		r.FingerprintVersion = lineage.CurrentFingerprintVersion
 		return r
 	}
 
@@ -110,6 +115,39 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		got := page.Runs
 		if len(got) != 1 || got[0].RunID != "a" {
 			t.Fatalf("project filter did not narrow: %+v", got)
+		}
+	})
+
+	t.Run("submitter_claim and job_id filter the listing", func(t *testing.T) {
+		s := newStore(t)
+		now := time.Now()
+		alice := mk("a", "p", now)
+		alice.SubmitterClaim, alice.JobID = "alice", "ci-1"
+		alice.Fingerprint = alice.Compute()
+		bob := mk("b", "p", now.Add(-time.Minute))
+		bob.SubmitterClaim, bob.JobID = "bob", "ci-2"
+		bob.Fingerprint = bob.Compute()
+		if err := s.Record(ctx, alice); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Record(ctx, bob); err != nil {
+			t.Fatal(err)
+		}
+
+		page, err := s.List(ctx, Query{Project: "p", SubmitterClaim: "alice"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "a" {
+			t.Fatalf("submitter_claim filter did not narrow: %+v", page.Runs)
+		}
+
+		page, err = s.List(ctx, Query{Project: "p", JobID: "ci-2"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "b" {
+			t.Fatalf("job_id filter did not narrow: %+v", page.Runs)
 		}
 	})
 
@@ -306,6 +344,41 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		if reGot.Status != lineage.StatusSucceeded || reGot.Metrics["loss"] != 0.1 {
 			t.Fatalf("update did not persist: %+v", reGot)
+		}
+	})
+
+	t.Run("submitter_claim and job_id are recorded and can be patched", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.SubmitterClaim = "alice"
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.SubmitterClaim != "alice" || got.JobID != "" {
+			t.Fatalf("attribution did not round-trip through Record/Get: %+v", got)
+		}
+
+		jobID := "ci-42"
+		got, err = s.Update(ctx, "a", Patch{JobID: &jobID})
+		if err != nil {
+			t.Fatalf("patching job_id: %v", err)
+		}
+		if got.JobID != "ci-42" || got.SubmitterClaim != "alice" {
+			t.Fatalf("want job_id patched and submitter_claim untouched, got %+v", got)
+		}
+
+		reGot, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reGot.JobID != "ci-42" {
+			t.Fatalf("patched job_id did not persist: %+v", reGot)
 		}
 	})
 

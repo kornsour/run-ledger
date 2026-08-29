@@ -34,6 +34,15 @@ purpose, and lives in ``replay``:
 
 or from a shell: ``python -m runledger.replay``. See ``replay.py`` for why
 this is safe to interrupt and re-run.
+
+``dataset_version`` is a free string the ledger never verifies; a caller who
+wants it to mean something can derive it from the data instead of typing it:
+
+    digest = runledger.hash_dataset("data/train")
+    with runledger.Run.start(project="demo", dataset_version=digest) as run:
+        ...
+
+Opt-in and entirely client-side -- see ``content_hash.py``.
 """
 
 from .read import (
@@ -46,6 +55,7 @@ from .read import (
     spread,
 )
 from ._run import DirtyTreeError, NoGitCommitError, Run, UnreconstructibleRunError
+from .content_hash import SymlinkNotSupportedError, hash_dataset
 from .replay import ReplayResult, replay_spool
 
 __all__ = [
@@ -65,6 +75,9 @@ __all__ = [
     # recovering a spool
     "replay_spool",
     "ReplayResult",
+    # deriving dataset_version
+    "hash_dataset",
+    "SymlinkNotSupportedError",
 ]
 
 __version__ = "0.1.0"

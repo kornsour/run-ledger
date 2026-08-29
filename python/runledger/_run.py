@@ -416,6 +416,20 @@ class Run:
             # the same shape rlctl's --param key=value produces. Coercing
             # here lets callers pass a plain dict of numbers/bools/whatever
             # without hand-stringifying each value themselves.
+            #
+            # str(v) is not made to match Go's canonical float spelling, and
+            # deliberately isn't: two clients agreeing on one exact string
+            # for every number is the fragile version of this problem, the
+            # one that broke before (rlctl sends the literal "3e-4" a user
+            # typed; str(3e-4) here gives "0.0003", a different string for
+            # the same value). The server now normalizes any numeric-looking
+            # param value before hashing it into the fingerprint (see
+            # lineage.Run.Compute and ADR 0013), so this client only has to
+            # produce *a* string that parses back to the right number, not
+            # *the* string another client would have produced. Duplicating
+            # Go's canonicalization here would just be a second
+            # implementation of the same rule, with its own chance to drift
+            # from the first.
             payload["params"] = {k: str(v) for k, v in self.params.items()}
         return payload
 
