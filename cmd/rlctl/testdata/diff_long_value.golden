@@ -1,0 +1,5 @@
+different experiments (fingerprints differ)
+
+FIELD                     KIND          A                     B
+config_hash               identity      sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  sha256:bbbb
+seed                      identity      1                     2

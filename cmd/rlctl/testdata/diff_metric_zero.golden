@@ -1,0 +1,4 @@
+same experiment (fingerprints match)
+
+FIELD                     KIND          A                     B
+metrics.loss              metric        0                     0.5

@@ -1,0 +1,5 @@
+same experiment (fingerprints match)
+
+FIELD                     KIND          A                     B
+metrics.auc               metric        0.94                  —
+params.tag                identity      —                     ""

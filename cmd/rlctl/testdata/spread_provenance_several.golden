@@ -1,0 +1,10 @@
+fingerprint fp-disagree — 3 run(s)
+
+METRIC                N     MIN           MAX           MEAN          STDDEV
+accuracy              3     0             0             0             0
+loss                  3     0.4           0.55          0.48          0.06
+
+provenance differs across these runs — the likeliest explanation for the spread:
+  device             cpu, cuda
+  job_id             —, slurm-7
+  submitter_claim    —, alice, bob

@@ -1,0 +1,4 @@
+fingerprint fp-agree — 3 run(s)
+
+METRIC                N     MIN           MAX           MEAN          STDDEV
+loss                  3     0.4           0.55          0.48          0.06
