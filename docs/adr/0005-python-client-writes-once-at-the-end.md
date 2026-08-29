@@ -1,5 +1,7 @@
 # ADR 0005: The Python client writes the ledger exactly once, at the end of a run
 
+**Superseded by [ADR 0014](0014-python-client-writes-running-then-patches-terminal.md).**
+
 Status: Accepted
 Date: 2026-08-27
 
