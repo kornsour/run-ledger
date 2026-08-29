@@ -356,7 +356,11 @@ paths:
         the same runs GET /v1/fingerprints/{fingerprint} already reports for
         them as no_repeats, so this is what keeps the two endpoints'
         membership consistent. Unrecognized query parameters are rejected
-        rather than silently ignored.
+        rather than silently ignored. Only terminal runs (succeeded, failed,
+        cancelled) count toward a fingerprint's group or its min_runs
+        threshold -- a created or running run has not produced a finished
+        measurement yet, so it is excluded rather than being counted as a
+        repeat.
       security:
         - bearerAuth: []
         - {}
@@ -434,7 +438,8 @@ paths:
         "200":
           description: >
             The spread group for this fingerprint, including no_repeats for
-            a lone run.
+            a lone run. Only terminal runs (succeeded, failed, cancelled)
+            count -- a created or running run is not a finished measurement.
           content:
             application/json:
               schema:
@@ -446,7 +451,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "404":
-          description: No run recorded with this fingerprint
+          description: >
+            No finished (terminal-status) run recorded with this
+            fingerprint -- including when every run recorded under it is
+            still created or running.
           content:
             application/json:
               schema:

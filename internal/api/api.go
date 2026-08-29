@@ -720,7 +720,7 @@ func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
 	// A nil slice serializes as JSON null; an empty result must still come
 	// back as [], the same rule list already follows via page.Runs.
 	groups := []spread.Group{}
-	for _, g := range spread.Compute(page.Runs) {
+	for _, g := range spread.Compute(terminalRuns(page.Runs)) {
 		if g.Count >= minRuns {
 			groups = append(groups, g)
 		}
@@ -819,12 +819,29 @@ func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
-	if len(page.Runs) == 0 {
+	runs := terminalRuns(page.Runs)
+	if len(runs) == 0 {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no run recorded with fingerprint %q", fp))
+		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no finished run recorded with fingerprint %q", fp))
 		return
 	}
-	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
+	writeJSON(w, http.StatusOK, spread.One(fp, runs))
+}
+
+// terminalRuns filters to the runs whose status is terminal -- succeeded,
+// failed, or cancelled. A running or created run carries whatever metrics
+// happen to be logged so far, not a finished measurement: counting it toward
+// a fingerprint's spread would let an in-flight run masquerade as a repeat,
+// join a group's min/max/mean/stddev with a mid-run value, and even outrank
+// genuinely divergent experiments on Group.Widest(). See ADR 0005.
+func terminalRuns(runs []lineage.Run) []lineage.Run {
+	out := make([]lineage.Run, 0, len(runs))
+	for _, r := range runs {
+		if lineage.Terminal(r.Status) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // parseLimit resolves the effective page size for GET /runs: DefaultListLimit
