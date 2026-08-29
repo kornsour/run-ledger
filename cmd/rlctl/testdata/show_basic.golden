@@ -1,0 +1,27 @@
+{
+  "project": "churn",
+  "git_commit": "0123456789abcdef",
+  "git_dirty": false,
+  "config_hash": "cfg-1",
+  "dataset_version": "v3",
+  "model_version": "v7",
+  "seed": 42,
+  "params": {
+    "lr": "0.0003"
+  },
+  "run_id": "run-eeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "fingerprint": "fp-show",
+  "fingerprint_version": 2,
+  "host": "gpu-node-01",
+  "device": "cuda:0",
+  "framework_version": "torch==2.5.0",
+  "submitter_claim": "",
+  "job_id": "slurm-7",
+  "status": "succeeded",
+  "started_at": "2026-03-04T15:30:00Z",
+  "ended_at": "2026-03-04T16:00:00Z",
+  "metrics": {
+    "accuracy": 0,
+    "loss": 0.42
+  }
+}
