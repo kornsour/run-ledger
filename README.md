@@ -373,6 +373,14 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   collection instead of a verb hanging off the root — and the query-param
   shape has somewhere to grow if comparing more than two runs ever matters.
   ([ADR 0010](docs/adr/0010-comparisons-is-a-resource-not-a-verb.md))
+- **Run attribution (`submitter_claim`, `job_id`) is provenance, not identity,
+  and `submitter_claim` is self-asserted.** The same experiment run by two
+  people is still the same experiment, so neither field feeds the
+  fingerprint. `RUNLEDGER_TOKEN` is one shared secret today, so the server
+  cannot attest who a caller is — `submitter_claim` is named to say plainly
+  that it is a claim, not a verified fact, until named per-caller tokens
+  exist.
+  ([ADR 0015](docs/adr/0015-run-attribution-is-provenance-self-asserted.md))
 
 ## Status
 

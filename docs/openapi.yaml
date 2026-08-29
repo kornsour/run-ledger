@@ -5,9 +5,9 @@ info:
     Content-addressed ledger for experiment runs. Identity fields (project,
     git_commit, git_dirty, config_hash, dataset_version, model_version, seed,
     params) determine a run's fingerprint; provenance fields (host, device,
-    framework_version, status, timestamps, checkpoint_uri, metrics) record
-    what happened without affecting it. See the repository README for the
-    full model.
+    framework_version, submitter_claim, job_id, status, timestamps,
+    checkpoint_uri, metrics) record what happened without affecting it. See
+    the repository README for the full model.
   version: "1.0.0"
   license:
     name: MIT
@@ -124,6 +124,21 @@ paths:
           in: query
           schema:
             type: string
+        - name: submitter_claim
+          in: query
+          description: >
+            Filter to runs whose submitter_claim matches exactly. This is
+            self-asserted, not attested (see the Run schema's
+            submitter_claim description) -- filtering by it finds runs a
+            caller claimed as theirs, not runs cryptographically proven to
+            be theirs.
+          schema:
+            type: string
+        - name: job_id
+          in: query
+          description: Filter to runs whose job_id matches exactly.
+          schema:
+            type: string
         - name: since
           in: query
           description: >
@@ -222,12 +237,12 @@ paths:
       summary: Update a run's provenance
       description: >
         Moves a run's provenance forward: status, ended_at, checkpoint_uri,
-        metrics, host, device, framework_version. Status transitions are
-        restricted to created -> running -> {succeeded, failed, cancelled};
-        a terminal status cannot be left. Identity fields may be included
-        only to confirm they are unchanged -- sending one that differs from
-        the stored value is rejected as a conflict rather than silently
-        ignored.
+        metrics, host, device, framework_version, submitter_claim, job_id.
+        Status transitions are restricted to created -> running ->
+        {succeeded, failed, cancelled}; a terminal status cannot be left.
+        Identity fields may be included only to confirm they are unchanged
+        -- sending one that differs from the stored value is rejected as a
+        conflict rather than silently ignored.
       security:
         - bearerAuth: []
         - {}
@@ -602,6 +617,20 @@ components:
           type: string
         framework_version:
           type: string
+        submitter_claim:
+          type: string
+          description: >
+            The human or service account the caller says recorded this run.
+            Self-asserted, not attested: the server has no per-caller
+            identity to check this against (RUNLEDGER_TOKEN is one shared
+            secret today). Treat it as a claim, not a verified fact. See
+            ADR 0015.
+        job_id:
+          type: string
+          description: >
+            The CI job id, Slurm job id, or other scheduler-assigned
+            identifier of the job that launched this run. One generic
+            field for whatever a launcher calls its own unit of work.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -646,6 +675,8 @@ components:
         - host
         - device
         - framework_version
+        - submitter_claim
+        - job_id
         - status
         - started_at
       properties:
@@ -698,6 +729,22 @@ components:
           type: string
         framework_version:
           type: string
+        submitter_claim:
+          type: string
+          description: >
+            The human or service account the caller says recorded this run.
+            Self-asserted, not attested: the server has no per-caller
+            identity to check this against (RUNLEDGER_TOKEN is one shared
+            secret today). Treat it as a claim, not a verified fact. Empty
+            means not recorded, the same rule ADR 0011 states for the other
+            scalar provenance fields. See ADR 0015.
+        job_id:
+          type: string
+          description: >
+            The CI job id, Slurm job id, or other scheduler-assigned
+            identifier of the job that launched this run. One generic
+            field for whatever a launcher calls its own unit of work. Empty
+            means not recorded.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -758,6 +805,14 @@ components:
         device:
           type: string
         framework_version:
+          type: string
+        submitter_claim:
+          type: string
+          description: >
+            Self-asserted, like the same field on RunInput/Run -- see ADR
+            0015. Patchable because a run is often recorded before every
+            provenance fact about it is known.
+        job_id:
           type: string
         metrics:
           type: object

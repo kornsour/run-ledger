@@ -8,6 +8,37 @@ import (
 	"github.com/kornsour/run-ledger/internal/compare"
 )
 
+// jobIDFromEnv only reads objective facts about the launching environment
+// (unlike --submitter-claim, which is never auto-populated -- see its flag
+// definition in cmdRecord), so this pins the priority order and the
+// no-env-set case, not any claim about identity.
+func TestJobIDFromEnvPrefersSlurmOverCI(t *testing.T) {
+	t.Setenv("SLURM_JOB_ID", "slurm-1")
+	t.Setenv("CI_JOB_ID", "ci-1")
+	t.Setenv("GITHUB_RUN_ID", "gha-1")
+	if got := jobIDFromEnv(); got != "slurm-1" {
+		t.Fatalf("want slurm-1 preferred, got %q", got)
+	}
+}
+
+func TestJobIDFromEnvFallsBackToGitHubRunID(t *testing.T) {
+	t.Setenv("SLURM_JOB_ID", "")
+	t.Setenv("CI_JOB_ID", "")
+	t.Setenv("GITHUB_RUN_ID", "gha-1")
+	if got := jobIDFromEnv(); got != "gha-1" {
+		t.Fatalf("want gha-1, got %q", got)
+	}
+}
+
+func TestJobIDFromEnvEmptyWhenNothingSet(t *testing.T) {
+	t.Setenv("SLURM_JOB_ID", "")
+	t.Setenv("CI_JOB_ID", "")
+	t.Setenv("GITHUB_RUN_ID", "")
+	if got := jobIDFromEnv(); got != "" {
+		t.Fatalf("want empty (not recorded), got %q", got)
+	}
+}
+
 // The verdict a diff prints must come from SameExperiment, not from whether
 // any field happened to render. Those two disagree for a real input -- see
 // TestRenderDiffDifferentExperimentWithNoRenderedFields -- and the earlier

@@ -38,6 +38,7 @@ func TestDuckDBPersistsAcrossReopen(t *testing.T) {
 	r := lineage.Run{
 		Project: "p", GitCommit: "c1", ConfigHash: "cfg",
 		RunID: "a", Status: lineage.StatusSucceeded, StartedAt: time.Now(), Device: "cpu",
+		SubmitterClaim: "alice", JobID: "ci-1",
 		Params: map[string]string{"lr": "3e-4"}, Metrics: map[string]float64{"loss": 0.1},
 	}
 	r.Fingerprint = r.Compute()
@@ -61,6 +62,9 @@ func TestDuckDBPersistsAcrossReopen(t *testing.T) {
 	}
 	if got.Project != "p" || got.Params["lr"] != "3e-4" || got.Metrics["loss"] != 0.1 {
 		t.Fatalf("run did not survive a close/reopen cycle: %+v", got)
+	}
+	if got.SubmitterClaim != "alice" || got.JobID != "ci-1" {
+		t.Fatalf("attribution did not survive a close/reopen cycle: %+v", got)
 	}
 	if !got.StartedAt.Equal(r.StartedAt) {
 		t.Fatalf("StartedAt did not survive a close/reopen cycle: got %v, want %v", got.StartedAt, r.StartedAt)
@@ -137,6 +141,77 @@ func TestDuckDBLegacyRowsDefaultToFingerprintVersion1(t *testing.T) {
 	if got.Fingerprint != legacyFingerprint {
 		t.Fatalf("a pre-existing fingerprint must not be reinterpreted by the migration: got %q, want %q",
 			got.Fingerprint, legacyFingerprint)
+	}
+}
+
+// TestDuckDBLegacyRowsDefaultAttributionToEmptyString exercises the ADR
+// 0015 migration the way TestDuckDBLegacyRowsDefaultToFingerprintVersion1
+// exercises ADR 0013's: simulate a database that predates submitter_claim
+// and job_id (everything through the fingerprint_version migration, but no
+// further), insert a row directly, then open it through NewDuckDB and
+// confirm the new columns read back as "" -- which, per ADR 0011's rule as
+// extended by ADR 0015, is exactly the correct claim ("not recorded") for a
+// row that was written before this ledger could capture attribution at
+// all. Unlike fingerprint_version, there is no separate legacy sentinel to
+// backfill to: "" already means what it needs to mean.
+func TestDuckDBLegacyRowsDefaultAttributionToEmptyString(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "runs.duckdb")
+
+	preMigration, err := sql.Open("duckdb", dsn)
+	if err != nil {
+		t.Fatalf("opening pre-migration duckdb: %v", err)
+	}
+	// migrations[0] creates the runs table; migrations[5] is the
+	// fingerprint_version column. Together they are the full schema that
+	// existed just before submitter_claim/job_id were added. Unlike
+	// TestDuckDBLegacyRowsDefaultToFingerprintVersion1 (which only needs
+	// migrations[0] and lets NewDuckDB apply everything else fresh), this
+	// simulation must also record 0-5 in schema_migrations itself: without
+	// that bookkeeping, NewDuckDB's own migrate() would try to reapply
+	// migrations[5]'s ALTER TABLE ADD COLUMN and fail on the column already
+	// existing -- exactly what a real already-upgraded database would never
+	// hit, since its schema_migrations already marks that migration done.
+	if _, err := preMigration.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("creating schema_migrations: %v", err)
+	}
+	for _, i := range []int{0, 5} {
+		if _, err := preMigration.ExecContext(ctx, migrations[i]); err != nil {
+			t.Fatalf("applying migrations[%d]: %v", i, err)
+		}
+		if _, err := preMigration.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, i); err != nil {
+			t.Fatalf("recording migrations[%d] as applied: %v", i, err)
+		}
+	}
+	_, err = preMigration.ExecContext(ctx, `
+		INSERT INTO runs (
+			run_id, project, git_commit, git_dirty, config_hash, dataset_version,
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, status, started_at_ns, ended_at_ns, checkpoint_uri
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-run", "p", "c1", false, "cfg", "", "", 0,
+		"fp", lineage.CurrentFingerprintVersion, "", "", "",
+		string(lineage.StatusSucceeded), time.Now().UnixNano(), nil, "",
+	)
+	if err != nil {
+		t.Fatalf("inserting pre-migration row: %v", err)
+	}
+	if err := preMigration.Close(); err != nil {
+		t.Fatalf("closing pre-migration handle: %v", err)
+	}
+
+	s, err := NewDuckDB(dsn)
+	if err != nil {
+		t.Fatalf("NewDuckDB against a pre-migration database: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	got, err := s.Get(ctx, "legacy-run")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.SubmitterClaim != "" || got.JobID != "" {
+		t.Fatalf("want a pre-migration row backfilled to \"\" (not recorded) for both fields, got %+v", got)
 	}
 }
 

@@ -56,12 +56,41 @@ type Run struct {
 	// every pre-existing row to FingerprintVersionLegacy explicitly, and any
 	// other caller constructing a Run by hand for a legacy value should do
 	// the same rather than leave the field at its zero value.
-	FingerprintVersion int       `json:"fingerprint_version"`
-	Host               string    `json:"host"`
-	Device             string    `json:"device"`
-	FrameworkVersion   string    `json:"framework_version"`
-	Status             Status    `json:"status"`
-	StartedAt          time.Time `json:"started_at"`
+	FingerprintVersion int    `json:"fingerprint_version"`
+	Host               string `json:"host"`
+	Device             string `json:"device"`
+	FrameworkVersion   string `json:"framework_version"`
+	// SubmitterClaim names the human or service account the caller says
+	// recorded this run. The field is named "claim", not "submitter" or
+	// "user", on purpose: RUNLEDGER_TOKEN is one shared secret today (see
+	// internal/api.Auth), so the server has no per-caller identity to read
+	// this from and check it against. Whatever a client puts here is exactly
+	// as trustworthy as GitCommit would be if nothing computed it -- a value
+	// the caller typed, not one the server verified. See ADR 0015 for why
+	// that is an accepted, documented gap rather than a silently-shipped
+	// claim that reads like a fact, and what attesting it later would need
+	// (named, per-caller tokens in place of the single shared one).
+	//
+	// It is provenance, deliberately: Compute never reads it. Two people
+	// running the identical experiment are still the identical experiment --
+	// making the submitter identity-bearing would fingerprint the same run
+	// differently depending on who happened to launch it, which destroys the
+	// one property fingerprinting exists to give (same fingerprint means
+	// same experiment, full stop).
+	SubmitterClaim string `json:"submitter_claim"`
+	// JobID is the identifier of the job or scheduler invocation that
+	// launched this run -- a CI job id, a Slurm job id, or whatever a
+	// launcher calls its own unit of work. Deliberately one generic field
+	// rather than CIJobID/SlurmJobID/etc.: the set of schedulers this ledger
+	// might see is open-ended, and a caller can always namespace its own
+	// value (e.g. "gha:4821001233") without the server having to know every
+	// launcher by name. Self-asserted the same way Host and Device already
+	// are -- unlike SubmitterClaim it does not name a person, so it does not
+	// need the same "claim" framing in its name; forging it gains a caller
+	// nothing the way misattributing a run to someone else would.
+	JobID     string    `json:"job_id"`
+	Status    Status    `json:"status"`
+	StartedAt time.Time `json:"started_at"`
 	// EndedAt is a pointer because a struct's zero value is never omitted by
 	// encoding/json's "omitempty" -- without the pointer, every run that
 	// hasn't ended would serialize ended_at as 0001-01-01T00:00:00Z instead

@@ -26,8 +26,10 @@ const (
 //
 // A and B are nil when the run did not record the field at all, and point
 // at "" when it recorded an empty value. Only params can currently be the
-// latter: for the seven scalar fields where an empty string is not a
-// meaningful value, "" is normalized to nil here -- see ADR 0011.
+// latter: for the scalar fields where an empty string is not a meaningful
+// value, "" is normalized to nil here -- see ADR 0011 (the original seven
+// fields) and ADR 0015 (submitter_claim and job_id, added under the same
+// rule).
 //
 // Carrying pointers makes Field unsafe to compare with ==, which would
 // test pointer identity rather than the values. Use reflect.DeepEqual.
@@ -136,6 +138,11 @@ func Runs(a, b lineage.Run) Result {
 	add("host", KindProvenance, optional(a.Host), optional(b.Host))
 	add("device", KindProvenance, optional(a.Device), optional(b.Device))
 	add("framework_version", KindProvenance, optional(a.FrameworkVersion), optional(b.FrameworkVersion))
+	// submitter_claim and job_id follow the same "" means not recorded" rule
+	// ADR 0011 states for the other scalar provenance fields (ADR 0015 extends
+	// it to these two rather than restating it there).
+	add("submitter_claim", KindProvenance, optional(a.SubmitterClaim), optional(b.SubmitterClaim))
+	add("job_id", KindProvenance, optional(a.JobID), optional(b.JobID))
 	add("status", KindProvenance, optional(string(a.Status)), optional(string(b.Status)))
 	add("checkpoint_uri", KindProvenance, optional(a.CheckpointURI), optional(b.CheckpointURI))
 

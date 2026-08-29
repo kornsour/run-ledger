@@ -24,6 +24,7 @@ section is a summary of these; this folder is the account.
 | [0010](0010-comparisons-is-a-resource-not-a-verb.md) | `/comparisons` is a resource, not a verb | Accepted |
 | [0011](0011-empty-string-means-not-recorded.md) | An empty string means "not recorded" | Accepted |
 | [0013](0013-param-values-are-normalized-before-hashing.md) | Param values are normalized before hashing, and the fingerprint is now versioned | Accepted |
+| [0015](0015-run-attribution-is-provenance-self-asserted.md) | Run attribution is provenance, and is self-asserted until named tokens exist | Accepted |
 
 ## Adding a record
 

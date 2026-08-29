@@ -61,6 +61,12 @@ type Query struct {
 	Fingerprint string
 	Status      lineage.Status
 	Device      string
+	// SubmitterClaim and JobID filter on the two attribution fields (ADR
+	// 0015) the same way Device already filters on a provenance field --
+	// this is the "filter GET /v1/runs to your own runs" capability #67
+	// asks for.
+	SubmitterClaim string
+	JobID          string
 	// Limit caps the number of rows a single List call returns. Zero means
 	// unbounded — callers that page (the HTTP API's GET /runs) are expected
 	// to supply their own default and maximum; Store itself imposes none, so
@@ -128,7 +134,16 @@ type Patch struct {
 	Host             *string
 	Device           *string
 	FrameworkVersion *string
-	Metrics          map[string]float64
+	// SubmitterClaim and JobID are patchable for the same reason Host and
+	// Device already are: a run is often recorded before every provenance
+	// fact about it is known (device detection deferred until the job
+	// actually schedules, a CI job id assigned after the record call
+	// fires), and being provenance -- not identity -- means correcting or
+	// filling one in later cannot rewrite what experiment the run was. See
+	// ADR 0015.
+	SubmitterClaim *string
+	JobID          *string
+	Metrics        map[string]float64
 }
 
 // Store is the persistence boundary.
@@ -218,6 +233,12 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 	if p.FrameworkVersion != nil {
 		updated.FrameworkVersion = *p.FrameworkVersion
 	}
+	if p.SubmitterClaim != nil {
+		updated.SubmitterClaim = *p.SubmitterClaim
+	}
+	if p.JobID != nil {
+		updated.JobID = *p.JobID
+	}
 	if p.Metrics != nil {
 		merged := make(map[string]float64, len(updated.Metrics)+len(p.Metrics))
 		for k, v := range updated.Metrics {
@@ -262,6 +283,12 @@ func isNoopPatch(existing lineage.Run, p Patch) bool {
 		return false
 	}
 	if p.FrameworkVersion != nil && *p.FrameworkVersion != existing.FrameworkVersion {
+		return false
+	}
+	if p.SubmitterClaim != nil && *p.SubmitterClaim != existing.SubmitterClaim {
+		return false
+	}
+	if p.JobID != nil && *p.JobID != existing.JobID {
 		return false
 	}
 	for k, v := range p.Metrics {

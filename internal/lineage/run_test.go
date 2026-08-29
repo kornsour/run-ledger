@@ -30,8 +30,27 @@ func TestFingerprintIgnoresProvenance(t *testing.T) {
 	b.Status = StatusFailed
 	b.StartedAt = time.Now()
 	b.Metrics = map[string]float64{"loss": 0.4}
+	b.SubmitterClaim = "someone-else"
+	b.JobID = "ci-job-99"
 	if a.Compute() != b.Compute() {
 		t.Fatal("provenance changed the fingerprint; the same experiment must fingerprint identically whatever its outcome")
+	}
+}
+
+// TestFingerprintIgnoresAttribution pins the property #67 exists to guard:
+// attribution is provenance, never identity. If SubmitterClaim or JobID ever
+// leaked into Compute, the same experiment run by two different people (or
+// launched by two different CI jobs) would split into two fingerprint
+// groups, which defeats the one thing fingerprinting is for -- "same
+// fingerprint means same experiment" would stop being true the moment a
+// second person pointed at the ledger.
+func TestFingerprintIgnoresAttribution(t *testing.T) {
+	a, b := base(), base()
+	a.SubmitterClaim, b.SubmitterClaim = "alice", "bob"
+	a.JobID, b.JobID = "slurm-1001", "gha-4821001233"
+	if a.Compute() != b.Compute() {
+		t.Fatal("two runs identical except for attribution must fingerprint identically -- " +
+			"attribution must never split a fingerprint group by who submitted a run")
 	}
 }
 
