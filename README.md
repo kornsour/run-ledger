@@ -119,8 +119,9 @@ internal/store/    Store interface + in-memory reference and DuckDB backends
 internal/compare/  structured diff, identity vs provenance vs metric
 internal/spread/   per-fingerprint metric spread across repeated runs
 internal/api/      HTTP handlers
-python/runledger/  Python client: `Run.start()` to record, runs()/spread() to read back
+python/runledger/  Python client: `Run.start()` to record, runs()/spread()/compare() to read back
 python/examples/   the worked reproducibility notebook
+dashboard/         local marimo app: browse spread(), drill into a group, compare() two runs
 scripts/           docs build helpers used by `make docs`
 ```
 
@@ -240,6 +241,12 @@ HTTP call, at the end, rather than one at each end of the run
 ```bash
 pip install -e ./python
 ```
+
+To browse instead of scripting — a ranked list of which experiments
+reproduce worst, a group's runs and provenance disagreements, and a
+`compare()` verdict between two of them — see [`dashboard/README.md`](dashboard/README.md).
+It is a local-only marimo app built on this same client, not a hosted
+service.
 
 ## Auth
 

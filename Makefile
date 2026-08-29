@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt lint cover clean run image docs notebook
+.PHONY: build test vet fmt lint cover clean run image docs notebook dashboard
 
 IMAGE ?= run-ledger
 TAG ?= dev
@@ -69,6 +69,18 @@ notebook: build
 	@# nbconvert has no dark theme or toggle of its own; this adds the same
 	@# light/dark switch docs/index.html and the pdoc output already have.
 	python3 scripts/apply_theme_toggle.py docs/reproducibility.html
+
+
+# Runs the local dashboard (dashboard/README.md) against a ledger you have
+# already started -- `make build && ./bin/runledger &`, same as the
+# notebook. Not something CI runs or the Pages deploy builds: see
+# dashboard/README.md for why this stays a local-only tool.
+#
+# Needs the dashboard's own dependencies: pip install -e ./python -e ./dashboard
+dashboard:
+	@command -v marimo >/dev/null 2>&1 || \
+		{ echo "marimo not found: pip install -e ./python -e ./dashboard"; exit 1; }
+	marimo run dashboard/app.py
 
 clean:
 	rm -rf bin coverage.out docs/reproducibility.html docs/python
