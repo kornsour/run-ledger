@@ -51,6 +51,12 @@ jobs:
           python-version: "3.12"
       - name: Test
         run: python3 -m unittest discover -s python/tests -v
+      # examples/churn is standard library only, so it needs no install step
+      # of its own -- including this repo's Python client. The scenario it
+      # backs is exercised by `make example`, not here; these are the unit
+      # tests for the capture detector.
+      - name: Test the example
+        run: python3 -m unittest discover -s examples/churn -v
 
   notebook:
     # The notebook is documentation that makes a claim -- same fingerprint,

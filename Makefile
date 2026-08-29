@@ -1,4 +1,4 @@
-.PHONY: build test vet fmt lint cover clean run image docs notebook dashboard
+.PHONY: build test vet fmt lint cover clean run image docs notebook dashboard example
 
 IMAGE ?= run-ledger
 TAG ?= dev
@@ -81,6 +81,23 @@ dashboard:
 	@command -v marimo >/dev/null 2>&1 || \
 		{ echo "marimo not found: pip install -e ./python -e ./dashboard"; exit 1; }
 	marimo run dashboard/app.py
+
+EXAMPLE_PORT ?= 8125
+
+# Runs examples/churn against a real, ephemeral ledger: a churn model with a
+# genuine unseeded-split bug, which the ledger finds from the record alone.
+# Standard library only, so unlike `notebook` and `dashboard` this needs no
+# pip install of any kind -- including this repo's own Python client.
+example: build
+	@./bin/runledger --addr :$(EXAMPLE_PORT) >/tmp/runledger-example.log 2>&1 & \
+		echo $$! > /tmp/runledger-example.pid; \
+		RUNLEDGER_ADDR=http://localhost:$(EXAMPLE_PORT) \
+			python3 examples/churn/scenario.py; \
+		status=$$?; \
+		kill $$(cat /tmp/runledger-example.pid) 2>/dev/null; \
+		rm -f /tmp/runledger-example.pid; \
+		exit $$status
+	python3 -m unittest discover -s examples/churn
 
 clean:
 	rm -rf bin coverage.out docs/reproducibility.html docs/python
