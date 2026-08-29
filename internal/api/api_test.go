@@ -126,12 +126,28 @@ func TestCompareFlagsUnattributableDifference(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
+	// unattributable sits directly on the response, a sibling of a/b/
+	// same_experiment/fields -- not nested under a "result" wrapper key.
 	var got struct {
-		Unattributable bool `json:"unattributable"`
+		A              string `json:"a"`
+		SameExperiment bool   `json:"same_experiment"`
+		Unattributable bool   `json:"unattributable"`
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.A != a {
+		t.Fatalf("want a to be top-level, got %s", w.Body)
+	}
+	if !got.SameExperiment {
+		t.Fatalf("want same_experiment true, got %s", w.Body)
+	}
 	if !got.Unattributable {
 		t.Fatalf("same experiment with different loss must be flagged: %s", w.Body)
+	}
+
+	var rawShape map[string]json.RawMessage
+	_ = json.Unmarshal(w.Body.Bytes(), &rawShape)
+	if _, ok := rawShape["result"]; ok {
+		t.Fatalf("response must not nest under a result key: %s", w.Body)
 	}
 }
 

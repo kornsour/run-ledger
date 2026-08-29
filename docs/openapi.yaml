@@ -263,7 +263,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompareResponse"
+                $ref: "#/components/schemas/CompareResult"
         "400":
           description: Missing a or b
           content:
@@ -600,12 +600,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CompareField"
-
-    CompareResponse:
-      type: object
-      properties:
-        result:
-          $ref: "#/components/schemas/CompareResult"
         unattributable:
           type: boolean
           description: >

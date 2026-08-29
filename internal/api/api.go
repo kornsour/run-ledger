@@ -640,11 +640,7 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), errCodeFor(err), fmt.Errorf("run b: %w", err))
 		return
 	}
-	res := compare.Runs(a, b)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"result":         res,
-		"unattributable": res.Unattributable(),
-	})
+	writeJSON(w, http.StatusOK, compare.Runs(a, b))
 }
 
 // spreadListQueryParams is the full set of query parameters GET /fingerprints

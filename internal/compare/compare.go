@@ -39,6 +39,11 @@ type Result struct {
 	// does not capture (nondeterminism, hardware, an unpinned dependency).
 	SameExperiment bool    `json:"same_experiment"`
 	Fields         []Field `json:"fields"`
+	// Unattributable is true for a same-experiment pair whose measured
+	// results still differ. That combination is the interesting one: the
+	// lineage record claims the two runs were identical, and they were not,
+	// so something real is going unrecorded.
+	Unattributable bool `json:"unattributable"`
 }
 
 // Runs diffs two run records.
@@ -47,6 +52,9 @@ func Runs(a, b lineage.Run) Result {
 	add := func(name string, kind Kind, x, y string) {
 		if x != y {
 			res.Fields = append(res.Fields, Field{Name: name, Kind: kind, A: x, B: y})
+			if res.SameExperiment && kind == KindMetric {
+				res.Unattributable = true
+			}
 		}
 	}
 
@@ -71,22 +79,6 @@ func Runs(a, b lineage.Run) Result {
 		add("metrics."+k, KindMetric, fmtMetric(a.Metrics, k), fmtMetric(b.Metrics, k))
 	}
 	return res
-}
-
-// Unattributable reports a same-experiment pair whose measured results differ.
-// That combination is the interesting one: the lineage record claims the two
-// runs were identical, and they were not, so something real is going
-// unrecorded.
-func (r Result) Unattributable() bool {
-	if !r.SameExperiment {
-		return false
-	}
-	for _, f := range r.Fields {
-		if f.Kind == KindMetric {
-			return true
-		}
-	}
-	return false
 }
 
 func fmtMetric(m map[string]float64, k string) string {
