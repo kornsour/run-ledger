@@ -9,6 +9,11 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
+# Only for building the docs artifacts (the executed notebook and the pdoc
+# reference). Deliberately not a runtime dependency: the client itself is
+# standard-library only, and a training container should not have to install
+# jupyter to record a run.
+docs = ["nbconvert>=7", "ipykernel>=6", "matplotlib>=3.7", "pdoc>=14"]
 
 [project.urls]
 Homepage = "https://github.com/kornsour/run-ledger"

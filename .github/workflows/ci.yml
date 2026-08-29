@@ -51,3 +51,35 @@ jobs:
           python-version: "3.12"
       - name: Test
         run: python3 -m unittest discover -s python/tests -v
+
+  notebook:
+    # The notebook is documentation that makes a claim -- same fingerprint,
+    # different metrics -- so it is executed here against a real ledger
+    # rather than trusted. Committed outputs are stripped (enforced by
+    # test_notebook.py), which means nothing in git records whether it still
+    # runs; this job is that record.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache: true
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the client and its docs tooling
+        run: pip install -e './python[docs]'
+      - name: Execute the notebook and build the reference
+        run: make docs
+      - name: Upload the rendered pages for inspection
+        # So a reviewer can read the executed notebook on a PR, where the
+        # Pages deploy (main only) has not run.
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-docs
+          path: |
+            docs/reproducibility.html
+            docs/python/
+          retention-days: 7

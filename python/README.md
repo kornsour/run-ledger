@@ -108,6 +108,27 @@ $ rlctl show a1b2c3d4e5f6a7b8-abc123
 happened at step 4 did not. That is the point: the ledger records what
 actually ran, including how far it got.
 
+## The worked notebook
+
+[`examples/reproducibility.ipynb`](examples/reproducibility.ipynb) records one
+experiment three times, shows all three landing on a single fingerprint with
+three different losses, and reads the verdict back — the ledger's central
+claim, executed rather than asserted.
+
+```bash
+make build && ./bin/runledger &        # from the repo root
+pip install -e './python[docs]'
+jupyter notebook python/examples/reproducibility.ipynb
+```
+
+Or read it already executed, without installing anything:
+**https://kornsour.github.io/run-ledger/reproducibility.html**
+
+It is committed with outputs stripped and executed on every deploy, so the
+published version always reflects a run that actually happened. Same git
+precondition as everything else here — it needs a checkout, so Colab will not
+work.
+
 ## Reading the ledger back
 
 Recording is half the client. The other half answers the question the ledger
@@ -216,8 +237,20 @@ are captured automatically — `framework_version` becomes e.g. `"torch
 Neither is required; a run with neither installed records `device="cpu"`
 and an empty `framework_version`.
 
+## Reference
+
+Generated from the source by `pdoc`:
+**https://kornsour.github.io/run-ledger/python/**
+
 ## Test
 
 ```bash
 python3 -m unittest discover -s python/tests -v
+```
+
+That includes structural checks on the notebook (no committed outputs, public
+API only). Actually *executing* it is CI's `notebook` job, or locally:
+
+```bash
+make notebook
 ```
