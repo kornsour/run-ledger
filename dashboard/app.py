@@ -106,7 +106,7 @@ def _(mo, project_picker, server_input):
 
 @app.cell(hide_code=True)
 def _(groups, groups_table, mo, server_input):
-    from runledger_dashboard import group_runs
+    from runledger_dashboard import diff_cell, group_runs
 
     if not groups_table.value:
         mo.stop(True, mo.md("_Select a group above to see its runs._"))
@@ -123,8 +123,28 @@ def _(groups, groups_table, mo, server_input):
     runs = group_runs(selected_group, server=server_input.value)
 
     provenance = selected_group.get("provenance") or []
+    # A ProvenanceDiff's values are plain strings, never JSON null: Go's
+    # []string has no "absent" element, so a run that never recorded the
+    # field comes through as "" rather than None. Every field spread
+    # surfaces here (device, framework_version, submitter_claim, job_id) is
+    # a scalar provenance field where ADR 0011 gives "" exactly one
+    # meaning, "not recorded" -- unlike the pair_diff fields below, nothing
+    # here can be a genuinely-recorded empty string. `v or None` maps that
+    # "" back to diff_cell's None case (an em dash) instead of its ""
+    # case (a quoted empty string, meant for a value a run actually
+    # recorded as empty) -- reusing diff_cell's existing convention rather
+    # than inventing a second one, so the two views read the same way.
+    # Before this, ", ".join(d["values"]) rendered the unrecorded run's ""
+    # verbatim, leaving a dangling comma that both looked like a formatting
+    # bug and erased the fact that some run never recorded the field --
+    # precisely the interesting half of a submitter_claim/job_id
+    # disagreement, since those two go unrecorded far more often than
+    # device or framework_version do.
     provenance_md = (
-        "\n".join(f"- **{d['field']}**: {', '.join(d['values'])}" for d in provenance)
+        "\n".join(
+            f"- **{d['field']}**: {', '.join(diff_cell(v or None) for v in d['values'])}"
+            for d in provenance
+        )
         if provenance
         else "_This group's runs agree on every recorded provenance field._"
     )

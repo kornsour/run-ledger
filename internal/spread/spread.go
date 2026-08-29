@@ -90,15 +90,36 @@ func (g Group) Widest() float64 {
 	return widest
 }
 
-// provenanceFields are the provenance columns most likely to explain a
-// same-fingerprint metric difference -- compare.go classifies these two the
-// same way, as KindProvenance.
+// provenanceFields are the provenance columns spread checks for a group
+// disagreement -- a deliberately narrower list than every field compare.go
+// classifies as KindProvenance (which also has host, status, and
+// checkpoint_uri): these are the columns worth a reader's first look, not
+// the exhaustive set.
+//
+// The four fall into two kinds, not one:
+//
+//   - device and framework_version are technical: a group that disagrees on
+//     one of these can have the difference itself as the cause of a metric
+//     moving (different hardware, different numerics).
+//   - submitter_claim and job_id cannot cause a metric to move the same
+//     way -- who submitted a run, or what job launched it, is not a measured
+//     input. What a disagreement here points at is a difference in *how* the
+//     run was launched, which is often the real explanation behind a spread
+//     that otherwise looks unattributable. Issue #67 names this workflow
+//     directly: "noticing that a fingerprint group's spread lines up with
+//     who submitted each run rather than with anything technical."
+//
+// Both kinds earn a place on this list for the same reason -- their
+// disagreement is a good first place to look -- even though only the first
+// kind is itself a plausible cause rather than a pointer toward one.
 var provenanceFields = []struct {
 	name string
 	get  func(lineage.Run) string
 }{
 	{"device", func(r lineage.Run) string { return r.Device }},
 	{"framework_version", func(r lineage.Run) string { return r.FrameworkVersion }},
+	{"submitter_claim", func(r lineage.Run) string { return r.SubmitterClaim }},
+	{"job_id", func(r lineage.Run) string { return r.JobID }},
 }
 
 // Compute groups runs by fingerprint and summarizes each group. runs need
@@ -201,6 +222,19 @@ func stat(vs []float64) MetricStat {
 	return MetricStat{Count: n, Min: min, Max: max, Mean: mean, StdDev: math.Sqrt(sq / float64(n))}
 }
 
+// provenanceDiffs does not special-case "": by ADR 0011 an empty value
+// already means "not recorded" for every field in provenanceFields, and
+// treating it as an ordinary value here happens to get both cases the ADR
+// requires right for free. A group where every run left a field empty
+// collapses to one distinct value ("") and is not reported -- nobody
+// recording job_id is not a disagreement. A group where only some runs
+// recorded it collapses to two or more distinct values, one of them "",
+// and is reported -- that split is itself the disagreement, the same as if
+// the recorded values disagreed with each other. Singling out "" for
+// different treatment (dropping it from Values, or requiring at least one
+// non-empty value before reporting) would have to special-case it either
+// way, and would obscure the recorded/not-recorded split this list exists
+// to surface for submitter_claim and job_id in particular.
 func provenanceDiffs(runs []lineage.Run) []ProvenanceDiff {
 	var diffs []ProvenanceDiff
 	for _, f := range provenanceFields {

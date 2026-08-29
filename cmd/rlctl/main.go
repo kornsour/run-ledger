@@ -421,10 +421,19 @@ func spreadOne(server, fingerprint string) error {
 	if err := call(http.MethodGet, server, "/fingerprints/"+url.PathEscape(fingerprint), nil, &g); err != nil {
 		return err
 	}
-	fmt.Printf("fingerprint %s — %d run(s)\n", g.Fingerprint, g.Count)
+	renderSpreadGroup(os.Stdout, g)
+	return nil
+}
+
+// renderSpreadGroup prints one fingerprint group's spread summary. Split out
+// from spreadOne, which can only be exercised against a live server, so the
+// rendering -- in particular how a provenance field's values print -- is
+// directly testable. Mirrors renderDiff's split for the same reason.
+func renderSpreadGroup(w io.Writer, g spread.Group) {
+	fmt.Fprintf(w, "fingerprint %s — %d run(s)\n", g.Fingerprint, g.Count)
 	if g.NoRepeats {
-		fmt.Println("no repeats: only one run has been recorded for this experiment")
-		return nil
+		fmt.Fprintln(w, "no repeats: only one run has been recorded for this experiment")
+		return
 	}
 
 	keys := make([]string, 0, len(g.Metrics))
@@ -432,19 +441,45 @@ func spreadOne(server, fingerprint string) error {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	fmt.Printf("\n%-20s  %-4s  %-12s  %-12s  %-12s  %s\n", "METRIC", "N", "MIN", "MAX", "MEAN", "STDDEV")
+	fmt.Fprintf(w, "\n%-20s  %-4s  %-12s  %-12s  %-12s  %s\n", "METRIC", "N", "MIN", "MAX", "MEAN", "STDDEV")
 	for _, k := range keys {
 		m := g.Metrics[k]
-		fmt.Printf("%-20s  %-4d  %-12g  %-12g  %-12g  %g\n", k, m.Count, m.Min, m.Max, m.Mean, m.StdDev)
+		fmt.Fprintf(w, "%-20s  %-4d  %-12g  %-12g  %-12g  %g\n", k, m.Count, m.Min, m.Max, m.Mean, m.StdDev)
 	}
 
 	if len(g.Provenance) > 0 {
-		fmt.Println("\nprovenance differs across these runs — the likeliest explanation for the spread:")
+		fmt.Fprintln(w, "\nprovenance differs across these runs — the likeliest explanation for the spread:")
 		for _, p := range g.Provenance {
-			fmt.Printf("  %-18s %s\n", p.Field, strings.Join(p.Values, ", "))
+			rendered := make([]string, len(p.Values))
+			for i, v := range p.Values {
+				rendered[i] = provenanceValue(v)
+			}
+			fmt.Fprintf(w, "  %-18s %s\n", p.Field, strings.Join(rendered, ", "))
 		}
 	}
-	return nil
+}
+
+// provenanceValue renders one value from a ProvenanceDiff.Values slice.
+// Every field spread.provenanceFields tracks is a scalar provenance field
+// (device, framework_version, submitter_claim, job_id), where ADR 0011
+// gives "" exactly one meaning, "not recorded" -- unlike compare.Field,
+// which also carries params and so needs cell's second case (a pointer to
+// "" for a value genuinely recorded as empty), nothing a ProvenanceDiff
+// carries can be that. So this does not reuse cell(*string) -- there is no
+// second case to distinguish here, and wrapping v in a pointer just to fit
+// cell's signature would invite a reader to look for one that does not
+// exist. It renders "" the same way cell renders a nil field (an em dash),
+// which matters because strings.Join on an untranslated "" produced a
+// dangling comma in a values list ("job_id   , slurm-7") that both read as
+// a formatting bug and silently dropped the fact that some run in the
+// group never recorded the field at all -- precisely the interesting half
+// of a submitter_claim/job_id disagreement, since those two are unrecorded
+// far more often than device or framework_version are.
+func provenanceValue(v string) string {
+	if v == "" {
+		return "—"
+	}
+	return v
 }
 
 func provenanceFields(diffs []spread.ProvenanceDiff) string {

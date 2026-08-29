@@ -109,6 +109,62 @@ func TestProvenanceDiffsEmptyWhenConstant(t *testing.T) {
 	}
 }
 
+func TestProvenanceDiffsSurfaceSubmitterClaim(t *testing.T) {
+	a := run("a", map[string]float64{"loss": 0.4})
+	a.SubmitterClaim = "alice"
+	b := run("b", map[string]float64{"loss": 0.5})
+	b.SubmitterClaim = "bob"
+
+	g := One("fp", []lineage.Run{a, b})
+	if len(g.Provenance) != 1 {
+		t.Fatalf("want exactly one provenance diff (submitter_claim), got %+v", g.Provenance)
+	}
+	if g.Provenance[0].Field != "submitter_claim" {
+		t.Fatalf("want submitter_claim to be flagged, got %q", g.Provenance[0].Field)
+	}
+	if len(g.Provenance[0].Values) != 2 {
+		t.Fatalf("want both submitter_claim values listed, got %v", g.Provenance[0].Values)
+	}
+}
+
+func TestProvenanceDiffsNotReportedWhenNobodyRecordsJobID(t *testing.T) {
+	// ADR 0011: "" means "not recorded", not a value of its own. Neither run
+	// here sets JobID, so both report the same "not recorded" state -- that
+	// is agreement, not a disagreement worth surfacing.
+	a := run("a", map[string]float64{"loss": 0.4})
+	b := run("b", map[string]float64{"loss": 0.5})
+
+	g := One("fp", []lineage.Run{a, b})
+	for _, d := range g.Provenance {
+		if d.Field == "job_id" {
+			t.Fatalf("nobody recorded job_id, want it absent from diffs, got %+v", d)
+		}
+	}
+}
+
+func TestProvenanceDiffsReportedWhenOnlySomeRecordJobID(t *testing.T) {
+	// One run recording job_id and another leaving it unset is a real
+	// disagreement -- distinct from two runs both leaving it unset -- and
+	// must be surfaced the same as two runs recording different job ids.
+	a := run("a", map[string]float64{"loss": 0.4})
+	a.JobID = "gha:4821001233"
+	b := run("b", map[string]float64{"loss": 0.5}) // job_id left unset
+
+	g := One("fp", []lineage.Run{a, b})
+	var got *ProvenanceDiff
+	for i, d := range g.Provenance {
+		if d.Field == "job_id" {
+			got = &g.Provenance[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("want job_id flagged when only one run recorded it, got %+v", g.Provenance)
+	}
+	if len(got.Values) != 2 {
+		t.Fatalf("want both the recorded and not-recorded values listed, got %v", got.Values)
+	}
+}
+
 // TestInFlightRunExcludedFromStats pins ADR 0012: a non-terminal run's
 // metric must not join the group's min/max/mean/stddev, even though the
 // finished runs beside it still report a repeat.

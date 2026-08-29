@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kornsour/run-ledger/internal/compare"
+	"github.com/kornsour/run-ledger/internal/spread"
 )
 
 // jobIDFromEnv only reads objective facts about the launching environment
@@ -156,3 +157,65 @@ func TestRenderDiffDistinguishesAbsentFromEmpty(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+// A run that never recorded job_id and a run that recorded it as some real
+// value must not print the same way in a Values list. Before
+// provenanceValue existed, strings.Join rendered the unrecorded run's ""
+// verbatim, leaving a dangling comma ("job_id   , slurm-7") that both read
+// as a formatting bug and erased the fact that one run left the field
+// unset -- the interesting half of the disagreement under ADR 0011.
+func TestRenderSpreadGroupProvenanceDistinguishesUnrecordedFromEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	renderSpreadGroup(&buf, spread.Group{
+		Fingerprint: "fp",
+		Count:       2,
+		Metrics:     map[string]spread.MetricStat{"loss": {Count: 2, Min: 0.4, Max: 0.5, Mean: 0.45, StdDev: 0.05}},
+		Provenance: []spread.ProvenanceDiff{
+			{Field: "job_id", Values: []string{"", "slurm-7"}},
+		},
+	})
+	out := buf.String()
+
+	if !strings.Contains(out, "job_id") {
+		t.Fatalf("want job_id field named, got:\n%s", out)
+	}
+	if !strings.Contains(out, "—, slurm-7") {
+		t.Errorf("want the unrecorded value rendered as an em dash ahead of the recorded one, got:\n%s", out)
+	}
+	if strings.Contains(out, "  , slurm-7") {
+		t.Errorf("must not leave a dangling comma where the unrecorded value was, got:\n%s", out)
+	}
+}
+
+func TestRenderSpreadGroupProvenanceAllValuesRecorded(t *testing.T) {
+	var buf bytes.Buffer
+	renderSpreadGroup(&buf, spread.Group{
+		Fingerprint: "fp",
+		Count:       2,
+		Metrics:     map[string]spread.MetricStat{"loss": {Count: 2, Min: 0.4, Max: 0.5, Mean: 0.45, StdDev: 0.05}},
+		Provenance: []spread.ProvenanceDiff{
+			{Field: "device", Values: []string{"cpu", "cuda"}},
+		},
+	})
+	out := buf.String()
+	if !strings.Contains(out, "cpu, cuda") {
+		t.Errorf("want both recorded values printed plainly, got:\n%s", out)
+	}
+	// The fingerprint header line legitimately uses an em dash of its own
+	// ("fingerprint fp — 2 run(s)"), so check the provenance line alone
+	// rather than the whole output for the absence of one.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "device") && strings.Contains(line, "—") {
+			t.Errorf("no value here was unrecorded, want no em dash on the provenance line, got:\n%s", out)
+		}
+	}
+}
+
+func TestProvenanceValueRendersUnrecordedAsEmDash(t *testing.T) {
+	if got := provenanceValue(""); got != "—" {
+		t.Fatalf("want an em dash for an unrecorded value, got %q", got)
+	}
+	if got := provenanceValue("cpu"); got != "cpu" {
+		t.Fatalf("want a recorded value printed as-is, got %q", got)
+	}
+}
