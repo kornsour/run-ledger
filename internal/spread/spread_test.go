@@ -7,8 +7,11 @@ import (
 	"github.com/kornsour/run-ledger/internal/lineage"
 )
 
+// run builds a terminal (succeeded) run: the common case these tests want,
+// now that One excludes anything else. Tests of the in-flight/terminal
+// split itself override Status explicitly.
 func run(id string, metrics map[string]float64) lineage.Run {
-	r := lineage.Run{Project: "p", GitCommit: "abc", ConfigHash: "cfg", Seed: 1, RunID: id, Metrics: metrics}
+	r := lineage.Run{Project: "p", GitCommit: "abc", ConfigHash: "cfg", Seed: 1, RunID: id, Status: lineage.StatusSucceeded, Metrics: metrics}
 	r.Fingerprint = r.Compute()
 	return r
 }
@@ -103,6 +106,103 @@ func TestProvenanceDiffsEmptyWhenConstant(t *testing.T) {
 	g := One("fp", []lineage.Run{a, b})
 	if len(g.Provenance) != 0 {
 		t.Fatalf("no provenance field differs, want none flagged, got %+v", g.Provenance)
+	}
+}
+
+// TestInFlightRunExcludedFromStats pins ADR 0012: a non-terminal run's
+// metric must not join the group's min/max/mean/stddev, even though the
+// finished runs beside it still report a repeat.
+func TestInFlightRunExcludedFromStats(t *testing.T) {
+	a := run("a", map[string]float64{"loss": 0.40})
+	b := run("b", map[string]float64{"loss": 0.50})
+	c := run("c", map[string]float64{"loss": 99.0})
+	c.Status = lineage.StatusRunning
+	a.Fingerprint, b.Fingerprint, c.Fingerprint = "fp", "fp", "fp"
+
+	g := One("fp", []lineage.Run{a, b, c})
+	m, ok := g.Metrics["loss"]
+	if !ok {
+		t.Fatal("want a loss entry")
+	}
+	if m.Count != 2 {
+		t.Fatalf("the running run's metric must not be counted, want count 2, got %d", m.Count)
+	}
+	if m.Max != 0.50 {
+		t.Fatalf("the running run's 99.0 must not enter the stats, got max %v", m.Max)
+	}
+}
+
+// TestInFlightCountReported checks the other half of ADR 0012: the
+// in-flight runs excluded from stats are not dropped silently, they are
+// reported as a count alongside the terminal group.
+func TestInFlightCountReported(t *testing.T) {
+	a := run("a", map[string]float64{"loss": 0.40})
+	b := run("b", map[string]float64{"loss": 0.50})
+	c := run("c", map[string]float64{"loss": 0.60})
+	c.Status = lineage.StatusCreated
+	d := run("d", map[string]float64{"loss": 0.70})
+	d.Status = lineage.StatusRunning
+	a.Fingerprint, b.Fingerprint, c.Fingerprint, d.Fingerprint = "fp", "fp", "fp", "fp"
+
+	g := One("fp", []lineage.Run{a, b, c, d})
+	if g.Count != 2 {
+		t.Fatalf("want 2 terminal runs counted, got %d", g.Count)
+	}
+	if g.InFlight != 2 {
+		t.Fatalf("want 2 in-flight runs reported, got %d", g.InFlight)
+	}
+}
+
+// TestGroupOfOnlyInFlightRuns checks a fingerprint that has not produced a
+// single finished measurement yet: it must not error or panic, it reports
+// no_repeats (0 terminal runs is fewer than 2) with the in-flight runs
+// still visible via InFlight rather than vanishing entirely.
+func TestGroupOfOnlyInFlightRuns(t *testing.T) {
+	a := run("a", map[string]float64{"loss": 0.40})
+	a.Status = lineage.StatusRunning
+	b := run("b", map[string]float64{"loss": 0.50})
+	b.Status = lineage.StatusCreated
+	a.Fingerprint, b.Fingerprint = "fp", "fp"
+
+	g := One("fp", []lineage.Run{a, b})
+	if g.Count != 0 {
+		t.Fatalf("want 0 terminal runs, got %d", g.Count)
+	}
+	if g.InFlight != 2 {
+		t.Fatalf("want both in-flight runs reported, got %d", g.InFlight)
+	}
+	if !g.NoRepeats {
+		t.Fatal("a group with no finished runs has nothing measurable, want no_repeats")
+	}
+	if g.Metrics != nil {
+		t.Fatalf("no terminal runs means no stats to report, got %+v", g.Metrics)
+	}
+	if len(g.RunIDs) != 0 {
+		t.Fatalf("run_ids tracks only terminal runs, got %v", g.RunIDs)
+	}
+}
+
+// TestInFlightRunReducesGroupBelowTwoStillNoRepeats checks that filtering
+// by status, not just raw run count, decides no_repeats: two runs recorded
+// under one fingerprint is not a repeat once only one of them is terminal.
+func TestInFlightRunReducesGroupBelowTwoStillNoRepeats(t *testing.T) {
+	a := run("a", map[string]float64{"loss": 0.40})
+	b := run("b", map[string]float64{"loss": 0.50})
+	b.Status = lineage.StatusRunning
+	a.Fingerprint, b.Fingerprint = "fp", "fp"
+
+	g := One("fp", []lineage.Run{a, b})
+	if !g.NoRepeats {
+		t.Fatal("2 raw runs but only 1 terminal is not a repeat, want no_repeats")
+	}
+	if g.Count != 1 {
+		t.Fatalf("want 1 terminal run counted, got %d", g.Count)
+	}
+	if g.InFlight != 1 {
+		t.Fatalf("want the running run reported as in-flight, got %d", g.InFlight)
+	}
+	if g.Metrics != nil {
+		t.Fatalf("a no-repeats group must not report metric stats, got %+v", g.Metrics)
 	}
 }
 

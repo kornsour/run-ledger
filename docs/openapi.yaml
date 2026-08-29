@@ -359,8 +359,8 @@ paths:
         rather than silently ignored. Only terminal runs (succeeded, failed,
         cancelled) count toward a fingerprint's group or its min_runs
         threshold -- a created or running run has not produced a finished
-        measurement yet, so it is excluded rather than being counted as a
-        repeat.
+        measurement yet, so it does not count as a repeat, but it is not
+        dropped either: it is reported on the group's in_flight count.
       security:
         - bearerAuth: []
         - {}
@@ -437,9 +437,13 @@ paths:
       responses:
         "200":
           description: >
-            The spread group for this fingerprint, including no_repeats for
-            a lone run. Only terminal runs (succeeded, failed, cancelled)
-            count -- a created or running run is not a finished measurement.
+            The spread group for this fingerprint, including no_repeats when
+            fewer than two terminal runs share it -- which includes a
+            fingerprint whose only runs are still created or running:
+            count 0, no_repeats true, in_flight set. Only terminal runs
+            (succeeded, failed, cancelled) count toward count, metrics, and
+            provenance; a created or running run is not a finished
+            measurement, so it is reported only via in_flight.
           content:
             application/json:
               schema:
@@ -452,9 +456,11 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: >
-            No finished (terminal-status) run recorded with this
-            fingerprint -- including when every run recorded under it is
-            still created or running.
+            No run at all -- of any status -- recorded with this
+            fingerprint. A fingerprint that has at least one run, even a
+            still-running one with no finished measurement yet, is a 200
+            (see above), for consistency with GET /v1/fingerprints's
+            min_runs=0 listing it.
           content:
             application/json:
               schema:
@@ -858,7 +864,7 @@ components:
 
     SpreadGroup:
       type: object
-      required: [fingerprint, run_ids, count, no_repeats]
+      required: [fingerprint, run_ids, count, no_repeats, in_flight]
       properties:
         fingerprint:
           type: string
@@ -866,11 +872,22 @@ components:
           type: array
           items:
             type: string
+          description: >
+            Terminal (succeeded, failed, cancelled) runs only -- an
+            in-flight run is counted in in_flight, not listed here.
         count:
           type: integer
+          description: Number of terminal runs with this fingerprint.
         no_repeats:
           type: boolean
-          description: True when exactly one run has this fingerprint; metrics is omitted in that case.
+          description: True when fewer than two terminal runs have this fingerprint; metrics is omitted in that case.
+        in_flight:
+          type: integer
+          description: >
+            Number of this fingerprint's runs that are not yet terminal
+            (created or running). Reported so a run still in progress is
+            visible rather than either silently dropped or miscounted as a
+            finished repeat.
         metrics:
           type: object
           additionalProperties:
