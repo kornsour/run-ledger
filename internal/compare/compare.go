@@ -4,6 +4,7 @@ package compare
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/kornsour/run-ledger/internal/lineage"
 )
@@ -145,11 +146,52 @@ func Runs(a, b lineage.Run) Result {
 	add("job_id", KindProvenance, optional(a.JobID), optional(b.JobID))
 	add("status", KindProvenance, optional(string(a.Status)), optional(string(b.Status)))
 	add("checkpoint_uri", KindProvenance, optional(a.CheckpointURI), optional(b.CheckpointURI))
+	add("capture.client", KindProvenance, optional(captureClient(a.Capture)), optional(captureClient(b.Capture)))
+	// Attempted is a set, not an ordered list -- captureAttempted renders it
+	// as a sorted, comma-joined string so two declarations naming the same
+	// fields in different orders (a real possibility: nothing about
+	// CaptureDeclaration.Attempted's wire order is meaningful) compare equal
+	// rather than manufacturing a diff out of nothing. A nil Capture (no
+	// declaration at all) and one with an empty Attempted both render as ""
+	// here and are optional()-normalized to nil the same way every other
+	// scalar provenance field is -- compare.go's job is "what differs",
+	// and "no declaration" vs "declared nothing" is a distinction
+	// completeness.py's peer-comparison fallback needs (see ADR 0016), not
+	// one a two-run diff has any use for.
+	add("capture.attempted", KindProvenance, optional(captureAttempted(a.Capture)), optional(captureAttempted(b.Capture)))
 
 	for _, k := range unionKeysF(a.Metrics, b.Metrics) {
 		add("metrics."+k, KindMetric, fmtMetric(a.Metrics, k), fmtMetric(b.Metrics, k))
 	}
 	return res
+}
+
+// captureClient returns c's client string, or "" if the run carries no
+// capture declaration at all. Fed through optional() at the call site, the
+// same "" means not recorded" treatment every other scalar provenance
+// field already gets -- a diff has no use for "no declaration" versus
+// "declared with an empty client name", only for "declared" versus "not".
+func captureClient(c *lineage.CaptureDeclaration) string {
+	if c == nil {
+		return ""
+	}
+	return c.Client
+}
+
+// captureAttempted renders c.Attempted as a canonical, comma-joined string:
+// sorted, because Attempted is conceptually a set (which fields the client
+// tried, not in what order it lists them), so two declarations naming the
+// same fields in different orders must compare equal rather than showing a
+// diff that isn't there. Returns "" for a nil Capture or an empty
+// Attempted -- fed through optional() at the call site, so both render as
+// "not recorded" the same as every other scalar provenance field.
+func captureAttempted(c *lineage.CaptureDeclaration) string {
+	if c == nil || len(c.Attempted) == 0 {
+		return ""
+	}
+	attempted := append([]string(nil), c.Attempted...)
+	sort.Strings(attempted)
+	return strings.Join(attempted, ",")
 }
 
 // fmtMetric returns nil for a metric the run did not report, which is
