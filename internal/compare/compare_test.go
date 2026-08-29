@@ -1,6 +1,7 @@
 package compare
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/kornsour/run-ledger/internal/lineage"
@@ -18,7 +19,7 @@ func TestSameExperimentDifferentOutcomeIsUnattributable(t *testing.T) {
 	if !res.SameExperiment {
 		t.Fatal("identical identity fields must fingerprint the same")
 	}
-	if !res.Unattributable() {
+	if !res.Unattributable {
 		t.Fatal("a metric difference between identical experiments must be flagged")
 	}
 }
@@ -32,7 +33,7 @@ func TestDifferentExperimentIsNotUnattributable(t *testing.T) {
 	if res.SameExperiment {
 		t.Fatal("a differing seed must change the fingerprint")
 	}
-	if res.Unattributable() {
+	if res.Unattributable {
 		t.Fatal("a metric difference is attributable when the experiment differed")
 	}
 }
@@ -62,6 +63,32 @@ func TestAbsentMetricIsNotZero(t *testing.T) {
 	}
 	if res.Fields[0].A != "0" || res.Fields[0].B != "" {
 		t.Fatalf("a recorded zero must not read the same as an absent metric: %+v", res.Fields[0])
+	}
+}
+
+func TestUnattributableMarshalsAsASiblingField(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.Metrics = map[string]float64{"loss": 0.10}
+	b.Metrics = map[string]float64{"loss": 0.14}
+	res := Runs(a, b)
+
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	// unattributable belongs on Result itself, alongside a/b/same_experiment/
+	// fields -- not nested under a separate wrapper the way GET /compare used
+	// to shape the HTTP response.
+	if _, ok := got["a"]; !ok {
+		t.Fatalf("want a top-level, got %v", got)
+	}
+	unattributable, ok := got["unattributable"].(bool)
+	if !ok || !unattributable {
+		t.Fatalf("want unattributable: true as a top-level field, got %v", got)
 	}
 }
 

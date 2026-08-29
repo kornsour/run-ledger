@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"runtime/debug"
 	"sort"
@@ -33,6 +34,12 @@ const DefaultListLimit = 50
 // what limit a request asks for. Without a ceiling, a client (or the size of
 // the ledger itself) decides how large a response the server hands back.
 const MaxListLimit = 500
+
+// MaxRequestBodyBytes caps how much of a JSON request body record and update
+// will read before giving up. params and metrics are client-controlled maps
+// that get hashed into the fingerprint; without a ceiling, a client decides
+// how much memory decoding one request costs the server.
+const MaxRequestBodyBytes = 1 << 20 // 1 MiB
 
 // Auth holds the bearer tokens that gate access to the API. A zero-value Auth
 // requires no token at all, which is the default: a single-user local ledger
@@ -119,6 +126,9 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 
 // route is one entry in the server's route table: the exact pattern
 // ServeMux registers it under (e.g. "POST /runs"), paired with its handler.
+// unmatched (below) walks this same table to tell "no such path" apart from
+// "wrong method for this path" once the mux itself has failed to find a
+// specific match.
 type route struct {
 	pattern string
 	handler http.HandlerFunc
@@ -155,10 +165,48 @@ func (s *Server) routes() []route {
 // duration/metrics instrumentation, and panic recovery.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	for _, rt := range s.routes() {
+	routes := s.routes()
+	for _, rt := range routes {
 		mux.HandleFunc(rt.pattern, rt.handler)
 	}
+	// http.ServeMux has no NotFoundHandler/MethodNotAllowedHandler hook, so a
+	// request that matches no pattern above would otherwise fall back to
+	// net/http's plain-text 404 -- breaking every client parsing the JSON
+	// error envelope every other response uses. Registering "/" (no method,
+	// so it matches anything) as the last-resort route catches that case.
+	mux.HandleFunc("/", s.unmatched(mux, routes))
 	return s.instrument(mux)
+}
+
+// unmatched runs only when mux found no method+pattern above for the
+// request. It re-asks mux, one route at a time, whether swapping in that
+// route's method would have matched this request's path -- reusing mux's own
+// pattern matching (wildcards included) instead of re-parsing path templates
+// itself. Some method matches: 405, with Allow listing them. None do: 404.
+func (s *Server) unmatched(mux *http.ServeMux, routes []route) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		seen := map[string]bool{}
+		var allowed []string
+		for _, rt := range routes {
+			method, _, ok := strings.Cut(rt.pattern, " ")
+			if !ok || seen[method] {
+				continue
+			}
+			probe := r.Clone(r.Context())
+			probe.Method = method
+			if _, pattern := mux.Handler(probe); pattern == rt.pattern {
+				seen[method] = true
+				allowed = append(allowed, method)
+			}
+		}
+		if len(allowed) == 0 {
+			writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no such route: %s %s", r.Method, r.URL.Path))
+			return
+		}
+		sort.Strings(allowed)
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Errorf("method %s not allowed on %s", r.Method, r.URL.Path))
+	}
 }
 
 // instrument wraps mux with request-scoped logging, request-duration
@@ -175,9 +223,11 @@ func (s *Server) instrument(mux *http.ServeMux) http.Handler {
 
 		// The pattern mux would route this request to (e.g. "GET /runs/{id}"),
 		// resolved up front so the metrics and log line report the route
-		// rather than the raw, high-cardinality path.
+		// rather than the raw, high-cardinality path. "/" is the catch-all
+		// registered in Handler for 404/405 handling, not a real route, so it
+		// is reported the same as no match at all.
 		_, pattern := mux.Handler(r)
-		if pattern == "" {
+		if pattern == "" || pattern == "/" {
 			pattern = "unmatched"
 		}
 
@@ -235,10 +285,23 @@ func newRequestID() string {
 	return hex.EncodeToString(buf[:])
 }
 
+// randomSuffix returns a short identifier appended to a server-assigned
+// run_id, purely to break accidental collisions -- see its call site in
+// record.
+func randomSuffix() string {
+	var buf [5]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		// Same reasoning as newRequestID's fallback: a broken platform
+		// shouldn't panic this request over an unrelated fault.
+		return "unavailable"
+	}
+	return hex.EncodeToString(buf[:])
+}
+
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.List(r.Context(), store.Query{Limit: 1}); err != nil {
 		s.metrics.StoreError("readyz")
-		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("store not ready: %w", err))
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", fmt.Errorf("store not ready: %w", err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -260,12 +323,20 @@ func (s *Server) requireAuth(write bool, next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		token, ok := bearerToken(r)
-		if !ok || !s.auth.allows(write, token) {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
-			writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
+		if ok && s.auth.allows(write, token) {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if ok && write && s.auth.allows(false, token) {
+			// The token is real -- it just doesn't carry write scope. That is
+			// an authorization failure, not an authentication one: retrying
+			// with the same token will never succeed, so this must not carry
+			// WWW-Authenticate, which invites exactly that retry.
+			writeErr(w, http.StatusForbidden, "forbidden", errors.New("read-only token cannot write"))
+			return
+		}
+		w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
+		writeErr(w, http.StatusUnauthorized, "unauthenticated", errors.New("missing or invalid bearer token"))
 	}
 }
 
@@ -279,14 +350,36 @@ func bearerToken(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
+// requireJSON reports an error unless r declares an application/json body.
+// An optional charset parameter (e.g. "; charset=utf-8") is allowed --
+// mime.ParseMediaType strips it before the comparison, so a legitimate
+// charset suffix is not mistaken for a wrong media type. A missing
+// Content-Type is rejected the same as a wrong one: an absent header is not
+// an invitation to assume JSON.
+func requireJSON(r *http.Request) error {
+	ct := r.Header.Get("Content-Type")
+	if ct == "" {
+		return fmt.Errorf("missing Content-Type, want application/json")
+	}
+	mediaType, _, err := mime.ParseMediaType(ct)
+	if err != nil || mediaType != "application/json" {
+		return fmt.Errorf("unsupported Content-Type %q, want application/json", ct)
+	}
+	return nil
+}
+
 func (s *Server) record(w http.ResponseWriter, r *http.Request) {
+	if err := requireJSON(r); err != nil {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type", err)
+		return
+	}
 	var run lineage.Run
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes))
 	// An unknown field is a typo in a lineage record. Accepting it silently
 	// would store a run that claims to describe an experiment it does not.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&run); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	if run.StartedAt.IsZero() {
@@ -299,21 +392,32 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	// caller assert that two different experiments were the same.
 	run.Fingerprint = run.Compute()
 	if run.RunID == "" {
-		run.RunID = run.Fingerprint[:16] + "-" + strconv.FormatInt(run.StartedAt.UnixNano(), 36)
+		// started_at is client-supplied, so two legitimate repeats of the same
+		// experiment sharing a coarse timestamp (e.g. a scheduler emitting
+		// second-granularity times) would otherwise collide into one run_id --
+		// the random suffix only needs to break that accidental tie, not be
+		// unguessable.
+		run.RunID = run.Fingerprint[:16] + "-" + strconv.FormatInt(run.StartedAt.UnixNano(), 36) + "-" + randomSuffix()
 	}
 	if err := s.store.Record(r.Context(), run); err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
+			// Record's only conflict is a run id already taken by different
+			// content -- unlike Update, there is no identity/transition
+			// distinction to make here.
 			s.metrics.StoreError("conflict")
-			writeErr(w, http.StatusConflict, err)
+			writeErr(w, http.StatusConflict, "id_taken", err)
 		default:
 			s.metrics.StoreError("invalid")
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "bad_request", err)
 		}
 		return
 	}
 	s.metrics.RecordRun(run.Project, string(run.Status))
 	s.log.Info("recorded run", "run_id", run.RunID, "project", run.Project, "fingerprint", run.Fingerprint)
+	// The server assigns run_id when the caller doesn't supply one, so
+	// Location is the only way to learn it without parsing the body.
+	w.Header().Set("Location", "/runs/"+run.RunID)
 	writeJSON(w, http.StatusCreated, run)
 }
 
@@ -349,11 +453,15 @@ type patchRequest struct {
 }
 
 func (s *Server) update(w http.ResponseWriter, r *http.Request) {
+	if err := requireJSON(r); err != nil {
+		writeErr(w, http.StatusUnsupportedMediaType, "unsupported_media_type", err)
+		return
+	}
 	var req patchRequest
-	dec := json.NewDecoder(r.Body)
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxRequestBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	p := store.Patch{
@@ -369,13 +477,29 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			s.metrics.StoreError("not_found")
-			writeErr(w, http.StatusNotFound, err)
-		case errors.Is(err, store.ErrConflict):
+			writeErr(w, http.StatusNotFound, "not_found", err)
+		// The more specific sentinels are checked before the plain
+		// ErrConflict they wrap, so a caller gets identity_conflict or
+		// illegal_transition instead of a code that only says "409" and
+		// makes the client guess why.
+		case errors.Is(err, store.ErrIdentityConflict):
 			s.metrics.StoreError("conflict")
-			writeErr(w, http.StatusConflict, err)
+			writeErr(w, http.StatusConflict, "identity_conflict", err)
+		case errors.Is(err, store.ErrIllegalTransition):
+			s.metrics.StoreError("conflict")
+			writeErr(w, http.StatusConflict, "illegal_transition", err)
+		case errors.Is(err, store.ErrUnknownStatus):
+			s.metrics.StoreError("invalid")
+			writeErr(w, http.StatusBadRequest, "unknown_status", err)
+		case errors.Is(err, store.ErrConflict):
+			// A future ErrConflict-family error api.go hasn't been taught a
+			// specific code for -- still a real conflict, just an
+			// unclassified one.
+			s.metrics.StoreError("conflict")
+			writeErr(w, http.StatusConflict, "conflict", err)
 		default:
 			s.metrics.StoreError("invalid")
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "bad_request", err)
 		}
 		return
 	}
@@ -390,45 +514,77 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, err)
+		writeErr(w, http.StatusNotFound, "not_found", err)
 		return
 	}
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
 }
 
+// listQueryParams is the full set of query parameters GET /runs recognizes.
+// A typo (?projct=demo) must be refused, not silently ignored -- the same
+// reasoning as ADR 0002, applied to the query string instead of the body.
+var listQueryParams = map[string]bool{
+	"project": true, "git_commit": true, "fingerprint": true,
+	"status": true, "device": true, "limit": true, "cursor": true,
+	"since": true, "until": true,
+}
+
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	for key := range q {
+		if !listQueryParams[key] {
+			writeErr(w, http.StatusBadRequest, "bad_request", fmt.Errorf("unknown query parameter %q", key))
+			return
+		}
+	}
 	limit, err := parseLimit(q.Get("limit"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	var after *store.Cursor
 	if raw := q.Get("cursor"); raw != "" {
 		c, err := decodeCursor(raw)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", err)
 			return
 		}
 		after = &c
+	}
+	status := lineage.Status(q.Get("status"))
+	if status != "" && !lineage.ValidStatus(status) {
+		writeErr(w, http.StatusBadRequest, "unknown_status", fmt.Errorf("unknown status %q", status))
+		return
+	}
+	since, err := parseTimeParam("since", q.Get("since"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	until, err := parseTimeParam("until", q.Get("until"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
 	}
 	page, err := s.store.List(r.Context(), store.Query{
 		Project:     q.Get("project"),
 		GitCommit:   q.Get("git_commit"),
 		Fingerprint: q.Get("fingerprint"),
-		Status:      lineage.Status(q.Get("status")),
+		Status:      status,
 		Device:      q.Get("device"),
 		Limit:       limit,
 		After:       after,
+		Since:       since,
+		Until:       until,
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	resp := map[string]any{"runs": page.Runs, "count": len(page.Runs), "limit": limit}
@@ -477,49 +633,171 @@ func decodeCursor(s string) (store.Cursor, error) {
 func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	idA, idB := r.URL.Query().Get("a"), r.URL.Query().Get("b")
 	if idA == "" || idB == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("both a and b are required"))
+		writeErr(w, http.StatusBadRequest, "bad_request", errors.New("both a and b are required"))
 		return
 	}
 	a, err := s.store.Get(r.Context(), idA)
 	if err != nil {
 		s.metrics.StoreError(errKind(err))
-		writeErr(w, statusFor(err), fmt.Errorf("run a: %w", err))
+		writeErr(w, statusFor(err), errCodeFor(err), fmt.Errorf("run a: %w", err))
 		return
 	}
 	b, err := s.store.Get(r.Context(), idB)
 	if err != nil {
 		s.metrics.StoreError(errKind(err))
-		writeErr(w, statusFor(err), fmt.Errorf("run b: %w", err))
+		writeErr(w, statusFor(err), errCodeFor(err), fmt.Errorf("run b: %w", err))
 		return
 	}
-	res := compare.Runs(a, b)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"result":         res,
-		"unattributable": res.Unattributable(),
-	})
+	writeJSON(w, http.StatusOK, compare.Runs(a, b))
 }
 
+// spreadListQueryParams is the full set of query parameters GET /fingerprints
+// recognizes -- see listQueryParams's reasoning for why a typo here is a 400
+// rather than a silently ignored filter.
+var spreadListQueryParams = map[string]bool{
+	"project": true, "min_runs": true, "limit": true, "cursor": true,
+}
+
+// defaultMinRuns is GET /fingerprints's min_runs default: it reproduces the
+// endpoint's original hardwired behavior (only fingerprints with repeats),
+// so a request that omits min_runs sees the same result it always has.
+const defaultMinRuns = 2
+
 // spreadList answers "which experiments in this project reproduce worst?" --
-// every fingerprint with more than one recorded run, ranked by the widest
-// relative metric spread. project is optional; omitted, it ranks across
-// every project the store holds.
+// by default, every fingerprint with more than one recorded run, ranked by
+// the widest relative metric spread. project is optional; omitted, it ranks
+// across every project the store holds.
+//
+// min_runs makes that "more than one run" filter an explicit, adjustable
+// membership rule instead of a hardwired one: GET /fingerprints/{fingerprint}
+// happily returns a lone run's group with no_repeats set, so without
+// min_runs=1 (or 0) a fingerprint could exist at the item endpoint and never
+// appear in this collection -- two disagreeing notions of "the fingerprints".
 func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
-	// Limit: 0 is intentionally unbounded here -- spread has to see every
-	// run for a fingerprint to report its true spread, not just one page.
-	page, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
+	q := r.URL.Query()
+	for key := range q {
+		if !spreadListQueryParams[key] {
+			writeErr(w, http.StatusBadRequest, "bad_request", fmt.Errorf("unknown query parameter %q", key))
+			return
+		}
+	}
+	minRuns, err := parseMinRuns(q.Get("min_runs"))
 	if err != nil {
-		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
-	var groups []spread.Group
+	limit, err := parseLimit(q.Get("limit"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	var after string
+	if raw := q.Get("cursor"); raw != "" {
+		fp, err := decodeSpreadCursor(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", err)
+			return
+		}
+		after = fp
+	}
+
+	// Limit: 0 is intentionally unbounded here -- spread has to see every
+	// run for a fingerprint to report its true spread, not just one page.
+	page, err := s.store.List(r.Context(), store.Query{Project: q.Get("project")})
+	if err != nil {
+		s.metrics.StoreError("internal")
+		writeErr(w, http.StatusInternalServerError, "internal", err)
+		return
+	}
+	// A nil slice serializes as JSON null; an empty result must still come
+	// back as [], the same rule list already follows via page.Runs.
+	groups := []spread.Group{}
 	for _, g := range spread.Compute(page.Runs) {
-		if g.Count > 1 {
+		if g.Count >= minRuns {
 			groups = append(groups, g)
 		}
 	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Widest() > groups[j].Widest() })
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups, "count": len(groups)})
+	// Fingerprint is the tiebreak so two groups with the same widest spread
+	// (including two with none at all) still land in one deterministic
+	// order -- pagination over an order that can reshuffle between requests
+	// would skip or repeat groups at the page boundary.
+	sort.Slice(groups, func(i, j int) bool {
+		if wi, wj := groups[i].Widest(), groups[j].Widest(); wi != wj {
+			return wi > wj
+		}
+		return groups[i].Fingerprint < groups[j].Fingerprint
+	})
+
+	start := 0
+	if after != "" {
+		idx := -1
+		for i, g := range groups {
+			if g.Fingerprint == after {
+				idx = i
+				break
+			}
+		}
+		// The cursor's fingerprint no longer has a place in this (freshly
+		// recomputed) order -- e.g. it fell out of min_runs, or the ledger
+		// changed underneath the traversal -- so there is no reliable
+		// position to resume from.
+		if idx == -1 {
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", fmt.Errorf("cursor does not match the current result set"))
+			return
+		}
+		start = idx + 1
+	}
+	end := start + limit
+	if end > len(groups) {
+		end = len(groups)
+	}
+	pageGroups := groups[start:end]
+
+	resp := map[string]any{"groups": pageGroups, "count": len(pageGroups), "limit": limit}
+	if end < len(groups) {
+		resp["next_cursor"] = encodeSpreadCursor(pageGroups[len(pageGroups)-1].Fingerprint)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseMinRuns resolves GET /fingerprints's membership threshold:
+// defaultMinRuns when the request specifies none, otherwise the request's
+// own non-negative integer -- 0 or 1 included, to let a caller see lone runs
+// that the default excludes.
+func parseMinRuns(s string) (int, error) {
+	if s == "" {
+		return defaultMinRuns, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("min_runs must be a non-negative integer, got %q", s)
+	}
+	return n, nil
+}
+
+// spreadCursorVersion and its encode/decode pair make GET /fingerprints's
+// pagination token an opaque, versioned token -- the same wire convention as
+// encodeCursor/decodeCursor -- but store.Cursor's StartedAt+RunID payload
+// doesn't apply here: spread groups are recomputed from scratch every
+// request, not fetched by a store-level keyset, so the payload that lets a
+// client resume is the fingerprint it last saw rather than a row position.
+const spreadCursorVersion = "v1"
+
+func encodeSpreadCursor(fingerprint string) string {
+	raw := fmt.Sprintf("%s:%s", spreadCursorVersion, fingerprint)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeSpreadCursor(s string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid cursor")
+	}
+	version, fingerprint, ok := strings.Cut(string(raw), ":")
+	if !ok || version != spreadCursorVersion || fingerprint == "" {
+		return "", fmt.Errorf("invalid or unsupported cursor")
+	}
+	return fingerprint, nil
 }
 
 // spreadOne answers "how much do this experiment's own repeats vary?" for
@@ -530,12 +808,12 @@ func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 	page, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	if len(page.Runs) == 0 {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, fmt.Errorf("no run recorded with fingerprint %q", fp))
+		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no run recorded with fingerprint %q", fp))
 		return
 	}
 	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
@@ -560,6 +838,21 @@ func parseLimit(s string) (int, error) {
 	return n, nil
 }
 
+// parseTimeParam resolves GET /runs's since/until query parameters: a zero
+// time.Time (meaning "no bound," per store.Query) when the request omits the
+// parameter, otherwise the parameter parsed as RFC 3339 -- the same format
+// every other timestamp in this API already uses (started_at, ended_at).
+func parseTimeParam(name, s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s must be an RFC 3339 timestamp, got %q", name, s)
+	}
+	return t, nil
+}
+
 func statusFor(err error) int {
 	if errors.Is(err, store.ErrNotFound) {
 		return http.StatusNotFound
@@ -574,12 +867,33 @@ func errKind(err error) string {
 	return "internal"
 }
 
+// errCodeFor is errKind's counterpart for the JSON error body's "code"
+// field. The two are computed separately (rather than one deriving the
+// other) because errKind feeds a metrics label, a space where new values are
+// cheap, while errCode is part of the API contract client code may switch
+// on.
+func errCodeFor(err error) string {
+	if errors.Is(err, store.ErrNotFound) {
+		return "not_found"
+	}
+	return "internal"
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, code int, err error) {
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+// writeErr writes a JSON error body carrying a stable, machine-readable code
+// alongside the human-readable message, plus the request id -- already set
+// as the X-Request-Id response header by instrument before any handler
+// runs, so reading it back off w here is simpler and just as correct as
+// threading a second copy through the request context.
+func writeErr(w http.ResponseWriter, code int, errCode string, err error) {
+	writeJSON(w, code, map[string]string{
+		"error":      err.Error(),
+		"code":       errCode,
+		"request_id": w.Header().Get("X-Request-Id"),
+	})
 }

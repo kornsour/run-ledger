@@ -30,16 +30,27 @@ type Run struct {
 	Params         map[string]string `json:"params,omitempty"`
 
 	// --- provenance: recorded, not hashed ---
-	RunID            string             `json:"run_id"`
-	Fingerprint      string             `json:"fingerprint"`
-	Host             string             `json:"host"`
-	Device           string             `json:"device"`
-	FrameworkVersion string             `json:"framework_version"`
-	Status           Status             `json:"status"`
-	StartedAt        time.Time          `json:"started_at"`
-	EndedAt          time.Time          `json:"ended_at,omitempty"`
-	CheckpointURI    string             `json:"checkpoint_uri,omitempty"`
-	Metrics          map[string]float64 `json:"metrics,omitempty"`
+	//
+	// Host, Device, FrameworkVersion, ConfigHash, DatasetVersion, and
+	// ModelVersion share a known gap: an empty string is indistinguishable
+	// from "not recorded," which can misrepresent a run that genuinely ran
+	// with none of these set. Widening them to pointers would ripple into
+	// Compute's hashing and every caller that decodes a lineage.Run from
+	// JSON, which is a bigger, separately-scoped change than this fix.
+	RunID            string    `json:"run_id"`
+	Fingerprint      string    `json:"fingerprint"`
+	Host             string    `json:"host"`
+	Device           string    `json:"device"`
+	FrameworkVersion string    `json:"framework_version"`
+	Status           Status    `json:"status"`
+	StartedAt        time.Time `json:"started_at"`
+	// EndedAt is a pointer because a struct's zero value is never omitted by
+	// encoding/json's "omitempty" -- without the pointer, every run that
+	// hasn't ended would serialize ended_at as 0001-01-01T00:00:00Z instead
+	// of leaving the field out.
+	EndedAt       *time.Time         `json:"ended_at,omitempty"`
+	CheckpointURI string             `json:"checkpoint_uri,omitempty"`
+	Metrics       map[string]float64 `json:"metrics,omitempty"`
 }
 
 // Status is the lifecycle state of a run.
@@ -87,7 +98,7 @@ func (r *Run) Validate() error {
 	if r.GitDirty && strings.TrimSpace(r.ConfigHash) == "" {
 		return ErrDirtyTree
 	}
-	if !r.EndedAt.IsZero() && r.EndedAt.Before(r.StartedAt) {
+	if r.EndedAt != nil && r.EndedAt.Before(r.StartedAt) {
 		return errors.New("ended_at precedes started_at")
 	}
 	return nil

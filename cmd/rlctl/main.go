@@ -301,24 +301,21 @@ func cmdDiff(args []string) error {
 		return fmt.Errorf("diff takes exactly two run ids")
 	}
 	q := url.Values{"a": {fs.Arg(0)}, "b": {fs.Arg(1)}}
-	var out struct {
-		Result         compare.Result `json:"result"`
-		Unattributable bool           `json:"unattributable"`
-	}
+	var out compare.Result
 	if err := call(http.MethodGet, *server+"/compare?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
-	if len(out.Result.Fields) == 0 {
+	if len(out.Fields) == 0 {
 		fmt.Println("the two records are identical")
 		return nil
 	}
-	if out.Result.SameExperiment {
+	if out.SameExperiment {
 		fmt.Println("same experiment (fingerprints match)")
 	} else {
 		fmt.Println("different experiments (fingerprints differ)")
 	}
 	fmt.Printf("\n%-24s  %-12s  %-20s  %s\n", "FIELD", "KIND", "A", "B")
-	for _, f := range out.Result.Fields {
+	for _, f := range out.Fields {
 		fmt.Printf("%-24s  %-12s  %-20s  %s\n", f.Name, f.Kind, or(f.A, "—"), or(f.B, "—"))
 	}
 	if out.Unattributable {

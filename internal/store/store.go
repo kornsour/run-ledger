@@ -22,6 +22,25 @@ var ErrNotFound = errors.New("run not found")
 // history unreliable.
 var ErrConflict = errors.New("run already recorded with different content")
 
+// ErrIdentityConflict is returned when a patch would change one of a run's
+// identity fields. It wraps ErrConflict so a caller that only checks
+// errors.Is(err, ErrConflict) — the check that predates this distinction —
+// still works unchanged; a caller that wants to report this case
+// specifically (the HTTP API, to pick a machine-readable error code) checks
+// errors.Is(err, ErrIdentityConflict) first.
+var ErrIdentityConflict = fmt.Errorf("%w: identity fields cannot be changed by an update", ErrConflict)
+
+// ErrIllegalTransition is returned when a patch would move a run's status
+// somewhere its lifecycle does not allow, or would change anything about a
+// run already in a terminal status. See ErrIdentityConflict for why this
+// wraps ErrConflict instead of replacing it.
+var ErrIllegalTransition = fmt.Errorf("%w: illegal status transition", ErrConflict)
+
+// ErrUnknownStatus is returned when a patch names a status lineage does not
+// recognize. It is a plain validation error, not a conflict — nothing
+// stored disagrees with the request, the request itself is malformed.
+var ErrUnknownStatus = errors.New("unknown status")
+
 // Cursor names a position in a run listing's total order — newest first by
 // StartedAt, RunID ascending as the tiebreak (the same order every Store
 // implementation sorts List's result in). It is how List paginates by
@@ -52,6 +71,15 @@ type Query struct {
 	// this cursor in the total order — the keyset for the page that comes
 	// next. Nil means "start from the top."
 	After *Cursor
+	// Since, when non-zero, restricts the listing to runs whose StartedAt is
+	// at or after this instant -- an inclusive lower bound.
+	Since time.Time
+	// Until, when non-zero, restricts the listing to runs whose StartedAt is
+	// strictly before this instant -- an exclusive upper bound. Pairing an
+	// inclusive Since with an exclusive Until means a run starting exactly on
+	// a boundary shared by two adjacent queries (e.g. paging by day) is
+	// counted by exactly one of them, never both or neither.
+	Until time.Time
 }
 
 // Page is one page of a Store.List result.
@@ -143,24 +171,40 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 		return lineage.Run{}, err
 	}
 	if p.Status != nil && !lineage.ValidStatus(*p.Status) {
-		return lineage.Run{}, fmt.Errorf("unknown status %q", *p.Status)
+		return lineage.Run{}, fmt.Errorf("%w: %q", ErrUnknownStatus, *p.Status)
 	}
 	if lineage.Terminal(existing.Status) {
-		// A terminal run is a finished outcome. Nothing about it — status
-		// included — moves again, even a same-value or metrics-only patch:
-		// there is no "in progress" left for it to report.
-		return lineage.Run{}, ErrConflict
+		// A terminal run is a finished outcome; nothing about it moves again.
+		// But a patch that asks for exactly what's already stored is a
+		// retry, not an attempt to move it -- a client with at-least-once
+		// delivery (e.g. a "finish" call whose response was lost) must be
+		// able to treat this the same way Record treats a re-recorded
+		// identical run, or a lost 200 turns into a 409 it cannot safely
+		// interpret as success.
+		if isNoopPatch(existing, p) {
+			return existing, nil
+		}
+		return lineage.Run{}, ErrIllegalTransition
 	}
 
 	updated := existing
 	if p.Status != nil && *p.Status != existing.Status {
 		if !legalTransitions[existing.Status][*p.Status] {
-			return lineage.Run{}, ErrConflict
+			return lineage.Run{}, ErrIllegalTransition
 		}
 		updated.Status = *p.Status
 	}
 	if p.EndedAt != nil {
-		updated.EndedAt = *p.EndedAt
+		updated.EndedAt = p.EndedAt
+	}
+	// existing.Status can't already be terminal (checked above), so reaching
+	// a terminal updated.Status means this patch is the transition that just
+	// caused it -- the same moment a client would otherwise have to supply
+	// EndedAt for itself. Default it here, mirroring the courtesy the record
+	// handler gives StartedAt, so a terminal run never lacks an end time.
+	if lineage.Terminal(updated.Status) && updated.EndedAt == nil {
+		endedAt := time.Now().UTC()
+		updated.EndedAt = &endedAt
 	}
 	if p.CheckpointURI != nil {
 		updated.CheckpointURI = *p.CheckpointURI
@@ -191,8 +235,45 @@ func applyPatch(existing lineage.Run, p Patch) (lineage.Run, error) {
 	return updated, nil
 }
 
-// checkIdentityUnchanged reports ErrConflict if p sets any identity field to
-// a value that differs from existing's. A field p leaves nil is not
+// isNoopPatch reports whether applying p to existing, an already-terminal
+// run, would change nothing. Identity fields are not checked here --
+// checkIdentityUnchanged has already run by the time this is called -- so
+// this only has to compare the provenance fields a terminal patch could
+// still legally repeat.
+//
+// A metrics-bearing patch is a no-op only if every key it sets already
+// exists in existing.Metrics with the identical value: the merge semantics
+// documented on Patch mean a new key would change the stored map even
+// though every field on the run struct itself stays the same.
+func isNoopPatch(existing lineage.Run, p Patch) bool {
+	if p.Status != nil && *p.Status != existing.Status {
+		return false
+	}
+	if p.EndedAt != nil && (existing.EndedAt == nil || !p.EndedAt.Equal(*existing.EndedAt)) {
+		return false
+	}
+	if p.CheckpointURI != nil && *p.CheckpointURI != existing.CheckpointURI {
+		return false
+	}
+	if p.Host != nil && *p.Host != existing.Host {
+		return false
+	}
+	if p.Device != nil && *p.Device != existing.Device {
+		return false
+	}
+	if p.FrameworkVersion != nil && *p.FrameworkVersion != existing.FrameworkVersion {
+		return false
+	}
+	for k, v := range p.Metrics {
+		if stored, ok := existing.Metrics[k]; !ok || stored != v {
+			return false
+		}
+	}
+	return true
+}
+
+// checkIdentityUnchanged reports ErrIdentityConflict if p sets any identity
+// field to a value that differs from existing's. A field p leaves nil is not
 // checked, and a set field equal to the current value is a no-op, not a
 // conflict — the same idempotence Record gives identical content.
 func checkIdentityUnchanged(existing lineage.Run, p Patch) error {
@@ -205,7 +286,7 @@ func checkIdentityUnchanged(existing lineage.Run, p Patch) error {
 		p.ModelVersion != nil && *p.ModelVersion != existing.ModelVersion,
 		p.Seed != nil && *p.Seed != existing.Seed,
 		p.Params != nil && !paramsEqual(p.Params, existing.Params):
-		return ErrConflict
+		return ErrIdentityConflict
 	}
 	return nil
 }

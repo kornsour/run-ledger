@@ -55,6 +55,11 @@ paths:
       responses:
         "201":
           description: Run recorded
+          headers:
+            Location:
+              description: /runs/{run_id} of the newly recorded run.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -65,8 +70,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Token is valid but lacks write scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           description: Conflicting run already recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Content-Type is missing or not application/json
           content:
             application/json:
               schema:
@@ -74,7 +97,9 @@ paths:
     get:
       operationId: listRuns
       summary: List runs
-      description: Paginated, newest-first by started_at then run_id.
+      description: >
+        Paginated, newest-first by started_at then run_id. Unrecognized
+        query parameters are rejected rather than silently ignored.
       security:
         - bearerAuth: []
         - {}
@@ -99,13 +124,32 @@ paths:
           in: query
           schema:
             type: string
+        - name: since
+          in: query
+          description: >
+            Restrict to runs started at or after this instant (inclusive).
+            May be combined with until and any other filter.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: >
+            Restrict to runs started strictly before this instant
+            (exclusive), so a run started exactly at the boundary shared by
+            an adjacent since/until pair is never double-counted or skipped.
+          schema:
+            type: string
+            format: date-time
         - name: limit
           in: query
-          description: Page size. Defaults to 50, capped at 500.
+          description: >
+            Page size. Defaults to 50. A value over 500 is not rejected --
+            it is clamped down to 500, and the response's own limit field
+            reports the value actually used.
           schema:
             type: integer
             minimum: 1
-            maximum: 500
         - name: cursor
           in: query
           description: >
@@ -122,6 +166,18 @@ paths:
                 $ref: "#/components/schemas/RunPage"
         "400":
           description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The store failed to answer the query
           content:
             application/json:
               schema:
@@ -143,8 +199,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Run"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: No run with that id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The store failed to answer the query
           content:
             application/json:
               schema:
@@ -190,6 +258,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Token is valid but lacks write scope
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: No run with that id
           content:
@@ -198,6 +278,12 @@ paths:
                 $ref: "#/components/schemas/Error"
         "409":
           description: Identity field in the patch conflicts with the stored run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Content-Type is missing or not application/json
           content:
             application/json:
               schema:
@@ -227,9 +313,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CompareResponse"
+                $ref: "#/components/schemas/CompareResult"
         "400":
           description: Missing a or b
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token
           content:
             application/json:
               schema:
@@ -240,11 +332,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "500":
+          description: The store failed to answer the query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /fingerprints:
     get:
       operationId: listFingerprintSpread
-      summary: Fingerprints with repeats, ranked by widest relative metric spread
+      summary: Fingerprints ranked by widest relative metric spread
+      description: >
+        Paginated, ranked by widest relative metric spread descending, ties
+        broken by fingerprint for a deterministic, resumable order. Defaults
+        to fingerprints with more than one recorded run (min_runs=2); pass
+        min_runs=1 or min_runs=0 to also see fingerprints with no repeats --
+        the same runs GET /fingerprints/{fingerprint} already reports for
+        them as no_repeats, so this is what keeps the two endpoints'
+        membership consistent. Unrecognized query parameters are rejected
+        rather than silently ignored.
       security:
         - bearerAuth: []
         - {}
@@ -254,13 +361,56 @@ paths:
           description: Restrict to one project; omitted ranks across every project.
           schema:
             type: string
+        - name: min_runs
+          in: query
+          description: >
+            Minimum run count a fingerprint's group must have to be
+            included. Defaults to 2 (only fingerprints with repeats); 0 or 1
+            also include fingerprints with no repeats.
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          description: >
+            Page size. Defaults to 50. A value over 500 is not rejected --
+            it is clamped down to 500, and the response's own limit field
+            reports the value actually used.
+          schema:
+            type: integer
+            minimum: 1
+        - name: cursor
+          in: query
+          description: >
+            Opaque pagination token from a previous page's next_cursor.
+            Format is not part of the API contract.
+          schema:
+            type: string
       responses:
         "200":
-          description: Ranked spread groups
+          description: A page of ranked spread groups
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SpreadGroupList"
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The store failed to answer the query
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /fingerprints/{fingerprint}:
     get:
@@ -284,8 +434,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SpreadGroup"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "404":
           description: No run recorded with this fingerprint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The store failed to answer the query
           content:
             application/json:
               schema:
@@ -321,6 +483,12 @@ paths:
               schema:
                 type: string
                 example: "ok\n"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "503":
           description: Store did not answer
           content:
@@ -342,6 +510,12 @@ paths:
             text/plain:
               schema:
                 type: string
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   securitySchemes:
@@ -416,6 +590,7 @@ components:
         ended_at:
           type: string
           format: date-time
+          description: Absent until the run ends -- never a zero-valued timestamp.
         checkpoint_uri:
           type: string
         metrics:
@@ -424,19 +599,84 @@ components:
             type: number
             format: double
 
+    # Run is deliberately a full standalone schema rather than
+    # allOf: [RunInput, {...}] -- JSON Schema validates each allOf branch
+    # independently, so RunInput's additionalProperties: false would reject
+    # fingerprint/run_id as unknown even though a sibling branch added them.
+    # Every real response would then fail validation against its own
+    # documented schema. RunInput's field list is duplicated here rather
+    # than shared, but the two schemas describe different things anyway: a
+    # request the caller assembles versus a record the server hands back
+    # with a handful of fields locked down.
     Run:
-      allOf:
-        - $ref: "#/components/schemas/RunInput"
-        - type: object
-          properties:
-            run_id:
-              type: string
-            fingerprint:
-              type: string
-              description: Content-addressed hash of the identity fields, computed by the server.
-            started_at:
-              type: string
-              format: date-time
+      type: object
+      additionalProperties: false
+      required:
+        - project
+        - git_commit
+        - git_dirty
+        - config_hash
+        - dataset_version
+        - model_version
+        - seed
+        - run_id
+        - fingerprint
+        - host
+        - device
+        - framework_version
+        - status
+        - started_at
+      properties:
+        project:
+          type: string
+        git_commit:
+          type: string
+        git_dirty:
+          type: boolean
+        config_hash:
+          type: string
+          description: Required when git_dirty is true -- a dirty tree alone does not describe what ran.
+        dataset_version:
+          type: string
+        model_version:
+          type: string
+        seed:
+          type: integer
+          format: int64
+        params:
+          type: object
+          additionalProperties:
+            type: string
+        run_id:
+          type: string
+          readOnly: true
+          description: Assigned by the server -- from the fingerprint, unless the request supplied one.
+        fingerprint:
+          type: string
+          readOnly: true
+          description: Content-addressed hash of the identity fields, computed by the server.
+        host:
+          type: string
+        device:
+          type: string
+        framework_version:
+          type: string
+        status:
+          $ref: "#/components/schemas/Status"
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          description: Absent until the run ends -- never a zero-valued timestamp.
+        checkpoint_uri:
+          type: string
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+            format: double
 
     RunPatch:
       type: object
@@ -470,6 +710,10 @@ components:
         ended_at:
           type: string
           format: date-time
+          description: >
+            Optional on a terminal status transition (succeeded, failed,
+            cancelled) -- the server defaults it to receive time when the
+            request omits it.
         checkpoint_uri:
           type: string
         host:
@@ -483,9 +727,14 @@ components:
           additionalProperties:
             type: number
             format: double
+          description: >
+            Merged into the run's existing metrics map, not replaced -- a
+            long run can report as it goes, and re-reporting an existing key
+            overwrites just that key.
 
     RunPage:
       type: object
+      required: [runs, count, limit]
       properties:
         runs:
           type: array
@@ -514,6 +763,7 @@ components:
 
     CompareResult:
       type: object
+      required: [a, b, same_experiment, fields, unattributable]
       properties:
         a:
           type: string
@@ -528,12 +778,6 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/CompareField"
-
-    CompareResponse:
-      type: object
-      properties:
-        result:
-          $ref: "#/components/schemas/CompareResult"
         unattributable:
           type: boolean
           description: >
@@ -543,6 +787,7 @@ components:
 
     MetricStat:
       type: object
+      required: [count, min, max, mean, stddev]
       properties:
         count:
           type: integer
@@ -567,6 +812,7 @@ components:
 
     SpreadGroup:
       type: object
+      required: [fingerprint, run_ids, count, no_repeats]
       properties:
         fingerprint:
           type: string
@@ -590,6 +836,7 @@ components:
 
     SpreadGroupList:
       type: object
+      required: [groups, count, limit]
       properties:
         groups:
           type: array
@@ -597,9 +844,29 @@ components:
             $ref: "#/components/schemas/SpreadGroup"
         count:
           type: integer
+        limit:
+          type: integer
+        next_cursor:
+          type: string
+          description: Present only when more groups may follow this page.
 
     Error:
       type: object
+      required: [error, code, request_id]
       properties:
         error:
           type: string
+        code:
+          type: string
+          description: >
+            A stable, machine-readable identifier for the failure, distinct
+            from the human-readable error string above -- e.g.
+            identity_conflict, illegal_transition, id_taken, unknown_status,
+            not_found, invalid_cursor, bad_request, unauthenticated. New
+            codes may be added over time; a client should treat one it does
+            not recognize as it would any other error.
+        request_id:
+          type: string
+          description: >
+            Echoes the X-Request-Id response header, so a report referencing
+            one also identifies the other.

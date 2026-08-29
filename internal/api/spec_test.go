@@ -170,11 +170,10 @@ func TestSchemasMatchGoTypes(t *testing.T) {
 		{schema: "RunPage", keys: []string{"runs", "count", "limit", "next_cursor"}},
 		{schema: "CompareField", typ: reflect.TypeOf(compare.Field{})},
 		{schema: "CompareResult", typ: reflect.TypeOf(compare.Result{})},
-		{schema: "CompareResponse", keys: []string{"result", "unattributable"}},
 		{schema: "MetricStat", typ: reflect.TypeOf(spread.MetricStat{})},
 		{schema: "ProvenanceDiff", typ: reflect.TypeOf(spread.ProvenanceDiff{})},
 		{schema: "SpreadGroup", typ: reflect.TypeOf(spread.Group{})},
-		{schema: "SpreadGroupList", keys: []string{"groups", "count"}},
+		{schema: "SpreadGroupList", keys: []string{"groups", "count", "limit", "next_cursor"}},
 	}
 
 	spec := loadSpec(t)

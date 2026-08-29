@@ -184,7 +184,7 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	var endedAt any
-	if !r.EndedAt.IsZero() {
+	if r.EndedAt != nil {
 		endedAt = r.EndedAt.UnixNano()
 	}
 	_, err = tx.ExecContext(ctx, `
@@ -241,7 +241,7 @@ func (d *DuckDB) Update(ctx context.Context, runID string, p Patch) (lineage.Run
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
 	var endedAt any
-	if !updated.EndedAt.IsZero() {
+	if updated.EndedAt != nil {
 		endedAt = updated.EndedAt.UnixNano()
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -322,7 +322,8 @@ func scanRun(row *sql.Row) (lineage.Run, error) {
 	r.Status = lineage.Status(status)
 	r.StartedAt = nsToTime(startedAtNS)
 	if endedAtNS.Valid {
-		r.EndedAt = nsToTime(endedAtNS.Int64)
+		endedAt := nsToTime(endedAtNS.Int64)
+		r.EndedAt = &endedAt
 	}
 	return r, nil
 }
@@ -382,6 +383,14 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	add("fingerprint", query.Fingerprint)
 	add("status", string(query.Status))
 	add("device", query.Device)
+	if !query.Since.IsZero() {
+		where = append(where, "started_at_ns >= ?")
+		args = append(args, query.Since.UnixNano())
+	}
+	if !query.Until.IsZero() {
+		where = append(where, "started_at_ns < ?")
+		args = append(args, query.Until.UnixNano())
+	}
 	if query.After != nil {
 		// Keyset predicate for "strictly after this row in (started_at_ns
 		// DESC, run_id ASC) order": either an earlier started_at, or the same
@@ -431,7 +440,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		r.Status = lineage.Status(status)
 		r.StartedAt = nsToTime(startedAtNS)
 		if endedAtNS.Valid {
-			r.EndedAt = nsToTime(endedAtNS.Int64)
+			endedAt := nsToTime(endedAtNS.Int64)
+			r.EndedAt = &endedAt
 		}
 		runs = append(runs, r)
 		runIDs = append(runIDs, r.RunID)
@@ -534,12 +544,22 @@ func (d *DuckDB) Close() error {
 // reflect.DeepEqual would report every re-record of identical content as a
 // conflict.
 func runsEqual(a, b lineage.Run) bool {
-	if !a.StartedAt.Equal(b.StartedAt) || !a.EndedAt.Equal(b.EndedAt) {
+	if !a.StartedAt.Equal(b.StartedAt) || !endedAtEqual(a.EndedAt, b.EndedAt) {
 		return false
 	}
 	a.StartedAt, b.StartedAt = time.Time{}, time.Time{}
-	a.EndedAt, b.EndedAt = time.Time{}, time.Time{}
+	a.EndedAt, b.EndedAt = nil, nil
 	return reflect.DeepEqual(a, b)
+}
+
+// endedAtEqual compares two *time.Time the way runsEqual needs: both nil is
+// equal, one nil and the other not is never equal, and two non-nil pointers
+// compare by instant (time.Equal), not by address.
+func endedAtEqual(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }
 
 // nsToTime is the inverse of r.StartedAt.UnixNano() / r.EndedAt.UnixNano():

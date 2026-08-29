@@ -51,6 +51,12 @@ func main() {
 		Addr:              *addr,
 		Handler:           api.New(st, log, api.WithAuth(auth)).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		// Nothing this API does should legitimately take long -- without
+		// these, a slow or stalled client holds a connection (and its
+		// goroutine) open indefinitely.
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
