@@ -561,6 +561,95 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("since and until narrow the listing to a half-open time range", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		_ = s.Record(ctx, mk("before", "p", base.Add(-time.Hour)))
+		_ = s.Record(ctx, mk("at-since", "p", base))
+		_ = s.Record(ctx, mk("mid", "p", base.Add(time.Hour)))
+		_ = s.Record(ctx, mk("at-until", "p", base.Add(2*time.Hour)))
+		_ = s.Record(ctx, mk("after", "p", base.Add(3*time.Hour)))
+
+		page, err := s.List(ctx, Query{Project: "p", Since: base, Until: base.Add(2 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Newest first: at-until is excluded (Until is exclusive), at-since is
+		// included (Since is inclusive), before/after fall outside the range
+		// entirely.
+		want := []string{"mid", "at-since"}
+		var got []string
+		for _, r := range page.Runs {
+			got = append(got, r.RunID)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("want %v, got %v", want, got)
+			}
+		}
+	})
+
+	t.Run("since/until compose with the other filters", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		_ = s.Record(ctx, mk("alpha-in", "alpha", base))
+		_ = s.Record(ctx, mk("beta-in", "beta", base))
+		_ = s.Record(ctx, mk("alpha-out", "alpha", base.Add(-time.Hour)))
+
+		page, err := s.List(ctx, Query{Project: "alpha", Since: base, Until: base.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "alpha-in" {
+			t.Fatalf("project and time-range filters together did not narrow correctly: %+v", page.Runs)
+		}
+	})
+
+	t.Run("a since/until-narrowed listing still paginates without skipping or duplicating rows", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		const inWindow = 5
+		var want []string
+		for i := 0; i < inWindow; i++ {
+			id := fmt.Sprintf("run-%d", i)
+			_ = s.Record(ctx, mk(id, "p", base.Add(time.Duration(i)*time.Minute)))
+			want = append(want, id)
+		}
+		// Recorded outside [since, until) -- pagination must never surface these.
+		_ = s.Record(ctx, mk("too-early", "p", base.Add(-time.Hour)))
+		_ = s.Record(ctx, mk("too-late", "p", base.Add(time.Hour)))
+
+		since, until := base, base.Add(inWindow*time.Minute)
+		var got []string
+		var cursor *Cursor
+		for {
+			page, err := s.List(ctx, Query{Project: "p", Since: since, Until: until, Limit: 2, After: cursor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range page.Runs {
+				got = append(got, r.RunID)
+			}
+			if page.Next == nil {
+				break
+			}
+			cursor = page.Next
+		}
+		// Newest first.
+		wantOrdered := []string{"run-4", "run-3", "run-2", "run-1", "run-0"}
+		if len(got) != len(wantOrdered) {
+			t.Fatalf("want %v, got %v", wantOrdered, got)
+		}
+		for i := range wantOrdered {
+			if got[i] != wantOrdered[i] {
+				t.Fatalf("want %v, got %v", wantOrdered, got)
+			}
+		}
+	})
+
 	t.Run("keyset pagination visits every pre-existing row exactly once under concurrent inserts", func(t *testing.T) {
 		s := newStore(t)
 		now := time.Now()

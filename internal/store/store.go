@@ -71,6 +71,15 @@ type Query struct {
 	// this cursor in the total order — the keyset for the page that comes
 	// next. Nil means "start from the top."
 	After *Cursor
+	// Since, when non-zero, restricts the listing to runs whose StartedAt is
+	// at or after this instant -- an inclusive lower bound.
+	Since time.Time
+	// Until, when non-zero, restricts the listing to runs whose StartedAt is
+	// strictly before this instant -- an exclusive upper bound. Pairing an
+	// inclusive Since with an exclusive Until means a run starting exactly on
+	// a boundary shared by two adjacent queries (e.g. paging by day) is
+	// counted by exactly one of them, never both or neither.
+	Until time.Time
 }
 
 // Page is one page of a Store.List result.

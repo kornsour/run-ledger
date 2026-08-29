@@ -145,6 +145,90 @@ func TestBadLimitIsRejected(t *testing.T) {
 	}
 }
 
+func TestSinceUntilNarrowListing(t *testing.T) {
+	h := srv(t)
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	rec := func(id string, at time.Time) {
+		body := fmt.Sprintf(`{"project":"p","git_commit":"c","config_hash":"cfg","run_id":%q,"started_at":%q}`,
+			id, at.Format(time.RFC3339))
+		w := post(t, h, body)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup failed for %s: %d %s", id, w.Code, w.Body)
+		}
+	}
+	rec("before", base.Add(-time.Hour))
+	rec("at-since", base)
+	rec("in-range", base.Add(time.Minute))
+	rec("after", base.Add(time.Hour))
+
+	url := fmt.Sprintf("/runs?since=%s&until=%s",
+		base.Format(time.RFC3339), base.Add(time.Hour).Format(time.RFC3339))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got struct {
+		Runs []struct {
+			RunID string `json:"run_id"`
+		} `json:"runs"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if len(got.Runs) != 2 {
+		t.Fatalf("want at-since and in-range only, got %+v", got.Runs)
+	}
+	seen := map[string]bool{}
+	for _, r := range got.Runs {
+		seen[r.RunID] = true
+	}
+	if !seen["at-since"] || !seen["in-range"] || seen["before"] || seen["after"] {
+		t.Fatalf("since/until did not narrow correctly: %+v", got.Runs)
+	}
+}
+
+func TestSinceUntilCombineWithOtherFilters(t *testing.T) {
+	h := srv(t)
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	rec := func(id, project string, at time.Time) {
+		body := fmt.Sprintf(`{"project":%q,"git_commit":"c","config_hash":"cfg","run_id":%q,"started_at":%q}`,
+			project, id, at.Format(time.RFC3339))
+		w := post(t, h, body)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("setup failed for %s: %d %s", id, w.Code, w.Body)
+		}
+	}
+	rec("alpha-in", "alpha", base)
+	rec("beta-in", "beta", base)
+	rec("alpha-out", "alpha", base.Add(-time.Hour))
+
+	url := fmt.Sprintf("/runs?project=alpha&status=created&since=%s&until=%s",
+		base.Format(time.RFC3339), base.Add(time.Hour).Format(time.RFC3339))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got struct {
+		Runs []struct {
+			RunID string `json:"run_id"`
+		} `json:"runs"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if len(got.Runs) != 1 || got.Runs[0].RunID != "alpha-in" {
+		t.Fatalf("project/status/since/until together did not narrow correctly: %+v", got.Runs)
+	}
+}
+
+func TestMalformedSinceUntilIsRejected(t *testing.T) {
+	for _, q := range []string{"since=not-a-time", "until=not-a-time", "since=2024-01-01"} {
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?"+q, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s: want 400, got %d: %s", q, w.Code, w.Body)
+		}
+	}
+}
+
 func TestBadCursorIsRejected(t *testing.T) {
 	for _, cursor := range []string{"not-base64url!!", "aGVsbG8", ""} {
 		if cursor == "" {

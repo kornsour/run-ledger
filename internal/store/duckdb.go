@@ -383,6 +383,14 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	add("fingerprint", query.Fingerprint)
 	add("status", string(query.Status))
 	add("device", query.Device)
+	if !query.Since.IsZero() {
+		where = append(where, "started_at_ns >= ?")
+		args = append(args, query.Since.UnixNano())
+	}
+	if !query.Until.IsZero() {
+		where = append(where, "started_at_ns < ?")
+		args = append(args, query.Until.UnixNano())
+	}
 	if query.After != nil {
 		// Keyset predicate for "strictly after this row in (started_at_ns
 		// DESC, run_id ASC) order": either an earlier started_at, or the same

@@ -83,6 +83,12 @@ func (m *Memory) List(_ context.Context, q Query) (Page, error) {
 		if q.Device != "" && r.Device != q.Device {
 			continue
 		}
+		if !q.Since.IsZero() && r.StartedAt.Before(q.Since) {
+			continue
+		}
+		if !q.Until.IsZero() && !r.StartedAt.Before(q.Until) {
+			continue
+		}
 		out = append(out, r)
 	}
 	// Newest first, run id as the tiebreak so ordering is total and stable —

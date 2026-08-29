@@ -523,6 +523,7 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 var listQueryParams = map[string]bool{
 	"project": true, "git_commit": true, "fingerprint": true,
 	"status": true, "device": true, "limit": true, "cursor": true,
+	"since": true, "until": true,
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -552,6 +553,16 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "unknown_status", fmt.Errorf("unknown status %q", status))
 		return
 	}
+	since, err := parseTimeParam("since", q.Get("since"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	until, err := parseTimeParam("until", q.Get("until"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
 	page, err := s.store.List(r.Context(), store.Query{
 		Project:     q.Get("project"),
 		GitCommit:   q.Get("git_commit"),
@@ -560,6 +571,8 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		Device:      q.Get("device"),
 		Limit:       limit,
 		After:       after,
+		Since:       since,
+		Until:       until,
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
@@ -819,6 +832,21 @@ func parseLimit(s string) (int, error) {
 		n = MaxListLimit
 	}
 	return n, nil
+}
+
+// parseTimeParam resolves GET /runs's since/until query parameters: a zero
+// time.Time (meaning "no bound," per store.Query) when the request omits the
+// parameter, otherwise the parameter parsed as RFC 3339 -- the same format
+// every other timestamp in this API already uses (started_at, ended_at).
+func parseTimeParam(name, s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s must be an RFC 3339 timestamp, got %q", name, s)
+	}
+	return t, nil
 }
 
 func statusFor(err error) int {

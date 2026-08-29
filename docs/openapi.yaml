@@ -112,6 +112,23 @@ paths:
           in: query
           schema:
             type: string
+        - name: since
+          in: query
+          description: >
+            Restrict to runs started at or after this instant (inclusive).
+            May be combined with until and any other filter.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: >
+            Restrict to runs started strictly before this instant
+            (exclusive), so a run started exactly at the boundary shared by
+            an adjacent since/until pair is never double-counted or skipped.
+          schema:
+            type: string
+            format: date-time
         - name: limit
           in: query
           description: Page size. Defaults to 50, capped at 500.
