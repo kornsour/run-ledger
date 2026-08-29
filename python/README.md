@@ -169,8 +169,15 @@ dependencies; if you want a frame, you have lost nothing:
 
 ```python
 import pandas as pd
-df = pd.DataFrame(runledger.runs(project="demo"))
+df = pd.json_normalize(runledger.runs(project="demo"))
+df[["run_id", "metrics.loss", "params.lr"]]
 ```
+
+`params` and `metrics` are nested objects on the wire (`Dict[str, str]` and
+`Dict[str, float]`), so plain `pd.DataFrame(...)` leaves them as columns of
+dicts rather than usable columns. `json_normalize` flattens them to
+`metrics.loss`, `params.lr`, and so on — the same dotted names the
+`/v1/comparisons` endpoint already reports fields under.
 
 ### Reads raise; writes don't
 
