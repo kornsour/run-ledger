@@ -14,9 +14,12 @@ Design note -- why plain dicts, and no pandas
 ---------------------------------------------
 These return lists of dicts, exactly as the wire delivers them. The package
 has no dependencies and that is worth keeping: a caller who wants a frame
-writes ``pd.DataFrame(runledger.runs(project="demo"))`` and has lost
-nothing, while a caller inside a training container that has no pandas has
-not gained a mandatory install.
+writes ``pd.json_normalize(runledger.runs(project="demo"))`` and has lost
+nothing -- ``params`` and ``metrics`` are nested objects on the wire, so
+plain ``pd.DataFrame`` would leave them as columns of dicts rather than the
+``metrics.loss`` / ``params.lr`` columns most callers actually want -- while
+a caller inside a training container that has no pandas has not gained a
+mandatory install.
 """
 
 from __future__ import annotations
