@@ -526,27 +526,153 @@ func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// spreadListQueryParams is the full set of query parameters GET /fingerprints
+// recognizes -- see listQueryParams's reasoning for why a typo here is a 400
+// rather than a silently ignored filter.
+var spreadListQueryParams = map[string]bool{
+	"project": true, "min_runs": true, "limit": true, "cursor": true,
+}
+
+// defaultMinRuns is GET /fingerprints's min_runs default: it reproduces the
+// endpoint's original hardwired behavior (only fingerprints with repeats),
+// so a request that omits min_runs sees the same result it always has.
+const defaultMinRuns = 2
+
 // spreadList answers "which experiments in this project reproduce worst?" --
-// every fingerprint with more than one recorded run, ranked by the widest
-// relative metric spread. project is optional; omitted, it ranks across
-// every project the store holds.
+// by default, every fingerprint with more than one recorded run, ranked by
+// the widest relative metric spread. project is optional; omitted, it ranks
+// across every project the store holds.
+//
+// min_runs makes that "more than one run" filter an explicit, adjustable
+// membership rule instead of a hardwired one: GET /fingerprints/{fingerprint}
+// happily returns a lone run's group with no_repeats set, so without
+// min_runs=1 (or 0) a fingerprint could exist at the item endpoint and never
+// appear in this collection -- two disagreeing notions of "the fingerprints".
 func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	for key := range q {
+		if !spreadListQueryParams[key] {
+			writeErr(w, http.StatusBadRequest, "bad_request", fmt.Errorf("unknown query parameter %q", key))
+			return
+		}
+	}
+	minRuns, err := parseMinRuns(q.Get("min_runs"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	limit, err := parseLimit(q.Get("limit"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
+		return
+	}
+	var after string
+	if raw := q.Get("cursor"); raw != "" {
+		fp, err := decodeSpreadCursor(raw)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", err)
+			return
+		}
+		after = fp
+	}
+
 	// Limit: 0 is intentionally unbounded here -- spread has to see every
 	// run for a fingerprint to report its true spread, not just one page.
-	page, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
+	page, err := s.store.List(r.Context(), store.Query{Project: q.Get("project")})
 	if err != nil {
 		s.metrics.StoreError("internal")
 		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
-	var groups []spread.Group
+	// A nil slice serializes as JSON null; an empty result must still come
+	// back as [], the same rule list already follows via page.Runs.
+	groups := []spread.Group{}
 	for _, g := range spread.Compute(page.Runs) {
-		if g.Count > 1 {
+		if g.Count >= minRuns {
 			groups = append(groups, g)
 		}
 	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Widest() > groups[j].Widest() })
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups, "count": len(groups)})
+	// Fingerprint is the tiebreak so two groups with the same widest spread
+	// (including two with none at all) still land in one deterministic
+	// order -- pagination over an order that can reshuffle between requests
+	// would skip or repeat groups at the page boundary.
+	sort.Slice(groups, func(i, j int) bool {
+		if wi, wj := groups[i].Widest(), groups[j].Widest(); wi != wj {
+			return wi > wj
+		}
+		return groups[i].Fingerprint < groups[j].Fingerprint
+	})
+
+	start := 0
+	if after != "" {
+		idx := -1
+		for i, g := range groups {
+			if g.Fingerprint == after {
+				idx = i
+				break
+			}
+		}
+		// The cursor's fingerprint no longer has a place in this (freshly
+		// recomputed) order -- e.g. it fell out of min_runs, or the ledger
+		// changed underneath the traversal -- so there is no reliable
+		// position to resume from.
+		if idx == -1 {
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", fmt.Errorf("cursor does not match the current result set"))
+			return
+		}
+		start = idx + 1
+	}
+	end := start + limit
+	if end > len(groups) {
+		end = len(groups)
+	}
+	pageGroups := groups[start:end]
+
+	resp := map[string]any{"groups": pageGroups, "count": len(pageGroups), "limit": limit}
+	if end < len(groups) {
+		resp["next_cursor"] = encodeSpreadCursor(pageGroups[len(pageGroups)-1].Fingerprint)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// parseMinRuns resolves GET /fingerprints's membership threshold:
+// defaultMinRuns when the request specifies none, otherwise the request's
+// own non-negative integer -- 0 or 1 included, to let a caller see lone runs
+// that the default excludes.
+func parseMinRuns(s string) (int, error) {
+	if s == "" {
+		return defaultMinRuns, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("min_runs must be a non-negative integer, got %q", s)
+	}
+	return n, nil
+}
+
+// spreadCursorVersion and its encode/decode pair make GET /fingerprints's
+// pagination token an opaque, versioned token -- the same wire convention as
+// encodeCursor/decodeCursor -- but store.Cursor's StartedAt+RunID payload
+// doesn't apply here: spread groups are recomputed from scratch every
+// request, not fetched by a store-level keyset, so the payload that lets a
+// client resume is the fingerprint it last saw rather than a row position.
+const spreadCursorVersion = "v1"
+
+func encodeSpreadCursor(fingerprint string) string {
+	raw := fmt.Sprintf("%s:%s", spreadCursorVersion, fingerprint)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+func decodeSpreadCursor(s string) (string, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return "", fmt.Errorf("invalid cursor")
+	}
+	version, fingerprint, ok := strings.Cut(string(raw), ":")
+	if !ok || version != spreadCursorVersion || fingerprint == "" {
+		return "", fmt.Errorf("invalid or unsupported cursor")
+	}
+	return fingerprint, nil
 }
 
 // spreadOne answers "how much do this experiment's own repeats vary?" for

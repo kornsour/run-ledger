@@ -520,6 +520,184 @@ func TestFingerprintsListOnlyIncludesRepeats(t *testing.T) {
 	}
 }
 
+func TestFingerprintsListMinRunsIncludesLoneRuns(t *testing.T) {
+	h := srv(t)
+	// Two runs of the same experiment, one lone run of a different one --
+	// the default (min_runs=2) sees only the first; min_runs=1 or 0 must
+	// also surface the lone run, matching what GET /fingerprints/{fp} would
+	// already report for it (no_repeats: true, not absent from the list).
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"metrics":{"loss":0.1}}`)
+	var lone map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &lone)
+	loneFP := lone["fingerprint"].(string)
+
+	for _, minRuns := range []string{"1", "0"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&min_runs="+minRuns, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("min_runs=%s: want 200, got %d: %s", minRuns, w.Code, w.Body)
+		}
+		var out struct {
+			Count  int `json:"count"`
+			Groups []struct {
+				Fingerprint string `json:"fingerprint"`
+				NoRepeats   bool   `json:"no_repeats"`
+			} `json:"groups"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Count != 2 || len(out.Groups) != 2 {
+			t.Fatalf("min_runs=%s: want both fingerprints, got %+v", minRuns, out)
+		}
+		found := false
+		for _, g := range out.Groups {
+			if g.Fingerprint == loneFP {
+				found = true
+				if !g.NoRepeats {
+					t.Fatalf("min_runs=%s: lone run's group must report no_repeats", minRuns)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("min_runs=%s: lone-run fingerprint %q missing from the list, got %+v", minRuns, loneFP, out)
+		}
+	}
+}
+
+func TestFingerprintsListInvalidMinRunsIs400(t *testing.T) {
+	for _, minRuns := range []string{"-1", "not-a-number", "1.5"} {
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?min_runs="+minRuns, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("min_runs=%s: want 400, got %d: %s", minRuns, w.Code, w.Body)
+		}
+	}
+}
+
+func TestFingerprintsListPaginatesWithoutSkippingOrRepeating(t *testing.T) {
+	h := srv(t)
+	const n = 5
+	fps := map[string]bool{}
+	for i := 0; i < n; i++ {
+		// Distinct seeds -> distinct fingerprints; two runs each so every
+		// group clears the default min_runs and has a real (zero) spread to
+		// sort on.
+		post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"metrics":{"loss":0.1}}`, i))
+		w := post(t, h, fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":%d,"metrics":{"loss":0.2}}`, i))
+		var created map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &created)
+		fps[created["fingerprint"].(string)] = true
+	}
+	if len(fps) != n {
+		t.Fatalf("setup: want %d distinct fingerprints, got %d", n, len(fps))
+	}
+
+	type page struct {
+		Groups []struct {
+			Fingerprint string `json:"fingerprint"`
+		} `json:"groups"`
+		Count      int    `json:"count"`
+		Limit      int    `json:"limit"`
+		NextCursor string `json:"next_cursor"`
+	}
+
+	// First page.
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&limit=2", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("page 1: want 200, got %d: %s", w.Code, w.Body)
+	}
+	var p1 page
+	if err := json.Unmarshal(w.Body.Bytes(), &p1); err != nil {
+		t.Fatal(err)
+	}
+	if p1.Count != 2 || p1.Limit != 2 {
+		t.Fatalf("page 1: want count=2 limit=2, got %+v", p1)
+	}
+	if p1.NextCursor == "" {
+		t.Fatalf("page 1: want a next_cursor with more groups remaining, got %+v", p1)
+	}
+
+	seen := map[string]bool{}
+	for _, g := range p1.Groups {
+		seen[g.Fingerprint] = true
+	}
+
+	// Follow next_cursor to the end.
+	cursor := p1.NextCursor
+	var last page
+	for i := 0; i < n; i++ { // generous guard against a cursor that never terminates
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&limit=2&cursor="+cursor, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("follow-up page: want 200, got %d: %s", w.Code, w.Body)
+		}
+		var pg page
+		if err := json.Unmarshal(w.Body.Bytes(), &pg); err != nil {
+			t.Fatal(err)
+		}
+		for _, g := range pg.Groups {
+			if seen[g.Fingerprint] {
+				t.Fatalf("fingerprint %q returned on more than one page", g.Fingerprint)
+			}
+			seen[g.Fingerprint] = true
+		}
+		last = pg
+		if pg.NextCursor == "" {
+			break
+		}
+		cursor = pg.NextCursor
+	}
+	if last.NextCursor != "" {
+		t.Fatalf("last page must have no next_cursor, got %+v", last)
+	}
+	if len(seen) != n {
+		t.Fatalf("want all %d fingerprints visited across pages with no gaps, got %d: %v", n, len(seen), seen)
+	}
+}
+
+func TestFingerprintsListInvalidCursorIsRejected(t *testing.T) {
+	for _, cursor := range []string{"not-base64url!!", "aGVsbG8"} {
+		w := httptest.NewRecorder()
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?cursor="+cursor, nil))
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("cursor=%s: want 400, got %d: %s", cursor, w.Code, w.Body)
+		}
+	}
+}
+
+func TestFingerprintsListEmptyResultIsEmptyArrayNotNull(t *testing.T) {
+	// An empty store returns no groups at all -- the nil slice that
+	// `var groups []spread.Group` would leave unappended-to serializes as
+	// JSON null, not []; unmarshaling into a Go slice would hide that bug
+	// (nil and [] decode the same way), so this checks the raw body text.
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), `"groups":null`) {
+		t.Fatalf("want groups:[] for an empty result, got: %s", w.Body)
+	}
+
+	// Also reachable with data present but min_runs set high enough that
+	// nothing qualifies.
+	h := srv(t)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?min_runs=5", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	if strings.Contains(w.Body.String(), `"groups":null`) {
+		t.Fatalf("want groups:[] when min_runs excludes everything, got: %s", w.Body)
+	}
+}
+
 func TestFingerprintOneGroupReportsMetricStats(t *testing.T) {
 	h := srv(t)
 	var a, b map[string]any

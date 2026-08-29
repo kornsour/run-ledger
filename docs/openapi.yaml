@@ -246,7 +246,16 @@ paths:
   /fingerprints:
     get:
       operationId: listFingerprintSpread
-      summary: Fingerprints with repeats, ranked by widest relative metric spread
+      summary: Fingerprints ranked by widest relative metric spread
+      description: >
+        Paginated, ranked by widest relative metric spread descending, ties
+        broken by fingerprint for a deterministic, resumable order. Defaults
+        to fingerprints with more than one recorded run (min_runs=2); pass
+        min_runs=1 or min_runs=0 to also see fingerprints with no repeats --
+        the same runs GET /fingerprints/{fingerprint} already reports for
+        them as no_repeats, so this is what keeps the two endpoints'
+        membership consistent. Unrecognized query parameters are rejected
+        rather than silently ignored.
       security:
         - bearerAuth: []
         - {}
@@ -256,13 +265,42 @@ paths:
           description: Restrict to one project; omitted ranks across every project.
           schema:
             type: string
+        - name: min_runs
+          in: query
+          description: >
+            Minimum run count a fingerprint's group must have to be
+            included. Defaults to 2 (only fingerprints with repeats); 0 or 1
+            also include fingerprints with no repeats.
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          description: Page size. Defaults to 50, capped at 500.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+        - name: cursor
+          in: query
+          description: >
+            Opaque pagination token from a previous page's next_cursor.
+            Format is not part of the API contract.
+          schema:
+            type: string
       responses:
         "200":
-          description: Ranked spread groups
+          description: A page of ranked spread groups
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SpreadGroupList"
+        "400":
+          description: Invalid query parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /fingerprints/{fingerprint}:
     get:
@@ -597,6 +635,11 @@ components:
             $ref: "#/components/schemas/SpreadGroup"
         count:
           type: integer
+        limit:
+          type: integer
+        next_cursor:
+          type: string
+          description: Present only when more groups may follow this page.
 
     Error:
       type: object
