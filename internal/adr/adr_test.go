@@ -301,17 +301,37 @@ var scannableExtensions = map[string]bool{
 	".yml":  true,
 }
 
-// skipDirs are directories walked past without descending into: version
-// control metadata, build output, and interpreter caches. None of these
-// hold source files that could carry an ADR reference worth checking, and
-// .git in particular is not always a directory (in a git worktree, as this
+// skipDirs are directories walked past without descending into.
+//
+// .git, .github, bin, and __pycache__ are skipped because they hold no
+// source files that could carry a meaningful ADR reference: .git in
+// particular is not always a directory (in a git worktree, as this
 // checkout is, it's a file pointing elsewhere) so it must be checked before
 // assuming it can be skipped as one.
+//
+// archive/ is skipped for a different, deliberate reason, not because it's
+// uninteresting: archive/README.md states its contents are historical --
+// "past decisions, plans, or state... may be incomplete, wrong about the
+// present, or describe approaches that were later abandoned" -- and must
+// not be used to understand the project as it is today. A document in
+// there can legitimately reference an ADR number that was later
+// superseded, or that no longer exists in the form the document describes;
+// that's what makes it a historical record rather than current
+// documentation. Requiring those references to keep resolving would create
+// pressure to edit archived text just to keep this test green, which is
+// exactly the "existing records are not edited to pretend the original
+// reasoning never held" convention docs/adr/README.md states for ADRs
+// themselves, applied to the wider archive. A test that forces rewriting
+// history to stay green is the wrong test even when it happens to pass
+// today, so archive/ is exempted on purpose -- this is a decision, not an
+// oversight, and re-including the folder here would reintroduce that
+// pressure.
 var skipDirs = map[string]bool{
 	".git":        true,
 	".github":     true,
 	"bin":         true,
 	"__pycache__": true,
+	"archive":     true,
 }
 
 // TestADRReferencesResolve is the check named directly in issue #79 item 4:
