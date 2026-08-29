@@ -1,0 +1,125 @@
+/* Dark palette for pdoc output, applied via docs/pdoc-template/frame.html.jinja2.
+   Mirrors the --bg/--fg/--card/--border values in docs/index.html so the Python
+   reference doesn't look like a different site once the toggle is switched. */
+
+:root[data-theme="dark"] {
+  --pdoc-background: #0d1117;
+}
+
+:root[data-theme="dark"] .pdoc {
+  --text: #e6edf3;
+  --muted: #9198a1;
+  --link: #4493f8;
+  --link-hover: #79c0ff;
+  --code: #151b23;
+  --active: #3b3300;
+  --accent: #151b23;
+  --accent2: #3d444d;
+  --nav-hover: rgba(255, 255, 255, 0.08);
+  --name: #79c0ff;
+  --def: #7ee787;
+  --annotation: #56d4dd;
+}
+
+:root[data-theme="dark"] .pdoc-code {
+  background: #0d1117;
+}
+
+:root[data-theme="dark"] .pdoc-code .c,
+:root[data-theme="dark"] .pdoc-code .cm,
+:root[data-theme="dark"] .pdoc-code .c1,
+:root[data-theme="dark"] .pdoc-code .ch,
+:root[data-theme="dark"] .pdoc-code .cs,
+:root[data-theme="dark"] .pdoc-code .cpf,
+:root[data-theme="dark"] .pdoc-code .cp,
+:root[data-theme="dark"] .pdoc-code .go { color: #8b949e; }
+
+:root[data-theme="dark"] .pdoc-code .k,
+:root[data-theme="dark"] .pdoc-code .kc,
+:root[data-theme="dark"] .pdoc-code .kd,
+:root[data-theme="dark"] .pdoc-code .kn,
+:root[data-theme="dark"] .pdoc-code .kr,
+:root[data-theme="dark"] .pdoc-code .kp,
+:root[data-theme="dark"] .pdoc-code .o,
+:root[data-theme="dark"] .pdoc-code .ow,
+:root[data-theme="dark"] .pdoc-code .gt,
+:root[data-theme="dark"] .pdoc-code .ne { color: #ff7b72; }
+
+:root[data-theme="dark"] .pdoc-code .kt,
+:root[data-theme="dark"] .pdoc-code .nc,
+:root[data-theme="dark"] .pdoc-code .nn,
+:root[data-theme="dark"] .pdoc-code .nv,
+:root[data-theme="dark"] .pdoc-code .vc,
+:root[data-theme="dark"] .pdoc-code .vg,
+:root[data-theme="dark"] .pdoc-code .vi,
+:root[data-theme="dark"] .pdoc-code .vm { color: #ffa657; }
+
+:root[data-theme="dark"] .pdoc-code .s,
+:root[data-theme="dark"] .pdoc-code .sa,
+:root[data-theme="dark"] .pdoc-code .sb,
+:root[data-theme="dark"] .pdoc-code .sc,
+:root[data-theme="dark"] .pdoc-code .dl,
+:root[data-theme="dark"] .pdoc-code .sd,
+:root[data-theme="dark"] .pdoc-code .s2,
+:root[data-theme="dark"] .pdoc-code .se,
+:root[data-theme="dark"] .pdoc-code .sh,
+:root[data-theme="dark"] .pdoc-code .si,
+:root[data-theme="dark"] .pdoc-code .sx,
+:root[data-theme="dark"] .pdoc-code .sr,
+:root[data-theme="dark"] .pdoc-code .s1,
+:root[data-theme="dark"] .pdoc-code .ss,
+:root[data-theme="dark"] .pdoc-code .m,
+:root[data-theme="dark"] .pdoc-code .mb,
+:root[data-theme="dark"] .pdoc-code .mf,
+:root[data-theme="dark"] .pdoc-code .mh,
+:root[data-theme="dark"] .pdoc-code .mi,
+:root[data-theme="dark"] .pdoc-code .mo,
+:root[data-theme="dark"] .pdoc-code .il,
+:root[data-theme="dark"] .pdoc-code .na,
+:root[data-theme="dark"] .pdoc-code .nl { color: #a5d6ff; }
+
+:root[data-theme="dark"] .pdoc-code .nb,
+:root[data-theme="dark"] .pdoc-code .bp,
+:root[data-theme="dark"] .pdoc-code .no { color: #79c0ff; }
+
+:root[data-theme="dark"] .pdoc-code .nd,
+:root[data-theme="dark"] .pdoc-code .nf,
+:root[data-theme="dark"] .pdoc-code .fm,
+:root[data-theme="dark"] .pdoc-code .gu { color: #d2a8ff; }
+
+:root[data-theme="dark"] .pdoc-code .nt,
+:root[data-theme="dark"] .pdoc-code .gi { color: #7ee787; }
+
+:root[data-theme="dark"] .pdoc-code .gd,
+:root[data-theme="dark"] .pdoc-code .gr,
+:root[data-theme="dark"] .pdoc-code .gh,
+:root[data-theme="dark"] .pdoc-code .err { color: #ffa198; }
+
+#rl-theme-toggle {
+  display: none;
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  width: 2.25rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #d1d9e0;
+  border-radius: 999px;
+  background: #f6f8fa;
+  color: #1b1f24;
+  cursor: pointer;
+  z-index: 1000;
+}
+.js #rl-theme-toggle { display: inline-flex; }
+#rl-theme-toggle svg { width: 1.1rem; height: 1.1rem; }
+#rl-theme-toggle:hover { border-color: #0969da; }
+#rl-theme-toggle .icon-sun { display: none; }
+:root[data-theme="dark"] #rl-theme-toggle .icon-sun { display: block; }
+:root[data-theme="dark"] #rl-theme-toggle .icon-moon { display: none; }
+:root[data-theme="dark"] #rl-theme-toggle {
+  background: #151b23;
+  border-color: #3d444d;
+  color: #e6edf3;
+}
+:root[data-theme="dark"] #rl-theme-toggle:hover { border-color: #4493f8; }

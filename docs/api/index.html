@@ -27,8 +27,23 @@
       // the server it describes is the supported path; the hosted GitHub
       // Pages copy is for reading the reference, not exercising a remote
       // ledger from a browser.
+      // Seeds the initial light/dark state from the same "theme" choice the
+      // rest of the site uses (see docs/index.html), so arriving here from
+      // the landing page doesn't flip the reader's eyes. Scalar owns the
+      // toggle from here on -- it isn't wired back to that shared key.
+      var initialDarkMode;
+      try {
+        var stored = localStorage.getItem('theme');
+        initialDarkMode = stored
+          ? stored === 'dark'
+          : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      } catch (e) {
+        initialDarkMode = true;
+      }
+
       Scalar.createApiReference('#app', {
         url: '../openapi.yaml',
+        darkMode: initialDarkMode,
       })
     </script>
   </body>

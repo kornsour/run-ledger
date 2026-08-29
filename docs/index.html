@@ -16,7 +16,7 @@
         --card: #f6f8fa;
       }
       @media (prefers-color-scheme: dark) {
-        :root {
+        :root:not([data-theme="light"]) {
           --bg: #0d1117;
           --fg: #e6edf3;
           --muted: #9198a1;
@@ -24,6 +24,22 @@
           --accent: #4493f8;
           --card: #151b23;
         }
+      }
+      :root[data-theme="dark"] {
+        --bg: #0d1117;
+        --fg: #e6edf3;
+        --muted: #9198a1;
+        --border: #3d444d;
+        --accent: #4493f8;
+        --card: #151b23;
+      }
+      :root[data-theme="light"] {
+        --bg: #ffffff;
+        --fg: #1b1f24;
+        --muted: #59636e;
+        --border: #d1d9e0;
+        --accent: #0969da;
+        --card: #f6f8fa;
       }
       * { box-sizing: border-box; }
       body {
@@ -63,9 +79,80 @@
         color: var(--muted); font-size: .9rem;
       }
       footer a { color: var(--accent); }
+      .theme-toggle {
+        display: none;
+        position: fixed;
+        top: 1rem;
+        right: 1rem;
+        width: 2.25rem;
+        height: 2.25rem;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .js .theme-toggle { display: inline-flex; }
+      .theme-toggle:hover { border-color: var(--accent); }
+      .theme-toggle svg { width: 1.1rem; height: 1.1rem; }
+      .theme-toggle .icon-sun { display: none; }
+      :root[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+      :root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
     </style>
+    <script>
+      (function () {
+        document.documentElement.classList.add("js");
+        var KEY = "theme";
+        function systemTheme() {
+          try {
+            return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light";
+          } catch (e) {
+            return "dark";
+          }
+        }
+        function apply(theme) {
+          document.documentElement.setAttribute("data-theme", theme);
+        }
+        var stored = null;
+        try {
+          stored = localStorage.getItem(KEY);
+        } catch (e) {}
+        apply(stored || systemTheme());
+        if (!stored && window.matchMedia) {
+          try {
+            window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (e) {
+              var current = null;
+              try {
+                current = localStorage.getItem(KEY);
+              } catch (err) {}
+              if (!current) apply(e.matches ? "dark" : "light");
+            });
+          } catch (e) {}
+        }
+        window.__setTheme = function (theme) {
+          try {
+            localStorage.setItem(KEY, theme);
+          } catch (e) {}
+          apply(theme);
+        };
+      })();
+    </script>
   </head>
   <body>
+    <button
+      class="theme-toggle"
+      type="button"
+      aria-label="Toggle dark mode"
+      title="Toggle dark mode"
+      onclick="window.__setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark')"
+    >
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M20.5 14.7A8.5 8.5 0 0 1 9.3 3.5a.5.5 0 0 0-.6-.7A10 10 0 1 0 21.2 15.3a.5.5 0 0 0-.7-.6z"/></svg>
+    </button>
     <main>
       <h1>run-ledger</h1>
       <p class="tagline">

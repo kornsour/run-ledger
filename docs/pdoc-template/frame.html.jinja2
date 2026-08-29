@@ -1,0 +1,58 @@
+{#
+Adds the site-wide light/dark toggle to pdoc's output. See docs/pdoc-template/custom.css
+for the dark palette and docs/index.html for the same pattern applied to the hand-written
+pages -- all three (this, the notebook via scripts/apply_theme_toggle.py, and the landing
+page) share the "theme" localStorage key and the sun/moon icon pair, so the choice made on
+one page reads as the same choice everywhere else under the same origin.
+#}
+{% extends "default/frame.html.jinja2" %}
+
+{% block head %}
+<script>
+(function () {
+  document.documentElement.classList.add("js");
+  var KEY = "theme";
+  function systemTheme() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark" : "light";
+    } catch (e) {
+      return "dark";
+    }
+  }
+  var stored = null;
+  try { stored = localStorage.getItem(KEY); } catch (e) {}
+  document.documentElement.setAttribute("data-theme", stored || systemTheme());
+})();
+</script>
+{% endblock %}
+
+{% block body %}
+{{ super() }}
+<button id="rl-theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+  <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+  <svg class="icon-moon" viewBox="0 0 24 24" fill="currentColor"><path d="M20.5 14.7A8.5 8.5 0 0 1 9.3 3.5a.5.5 0 0 0-.6-.7A10 10 0 1 0 21.2 15.3a.5.5 0 0 0-.7-.6z"/></svg>
+</button>
+<script>
+(function () {
+  var KEY = "theme";
+  var btn = document.getElementById("rl-theme-toggle");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    var current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    var next = current === "dark" ? "light" : "dark";
+    try { localStorage.setItem(KEY, next); } catch (e) {}
+    document.documentElement.setAttribute("data-theme", next);
+  });
+  if (window.matchMedia) {
+    try {
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", function (e) {
+        var stored = null;
+        try { stored = localStorage.getItem(KEY); } catch (err) {}
+        if (!stored) document.documentElement.setAttribute("data-theme", e.matches ? "dark" : "light");
+      });
+    } catch (e) {}
+  }
+})();
+</script>
+{% endblock %}

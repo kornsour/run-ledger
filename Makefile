@@ -41,7 +41,7 @@ DOCS_PORT ?= 8123
 #
 # Needs the docs tooling: pip install -e './python[docs]'
 docs: build notebook
-	pdoc runledger -o docs/python
+	pdoc -t docs/pdoc-template runledger -o docs/python
 
 # Executes the notebook against a real, ephemeral ledger and writes the HTML
 # into docs/. A notebook that has stopped working fails here rather than
@@ -66,6 +66,9 @@ notebook: build
 	@# fails the build if any image lacks a description.
 	python3 scripts/apply_alt_text.py \
 		python/examples/reproducibility.ipynb docs/reproducibility.html
+	@# nbconvert has no dark theme or toggle of its own; this adds the same
+	@# light/dark switch docs/index.html and the pdoc output already have.
+	python3 scripts/apply_theme_toggle.py docs/reproducibility.html
 
 clean:
 	rm -rf bin coverage.out docs/reproducibility.html docs/python
