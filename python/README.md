@@ -212,7 +212,8 @@ the server — connection refused, timed out, DNS failure, a bad response — th
 client emits a `RuntimeWarning` and appends the run record as one JSON line
 to a local spool file (`~/.runledger/spool.jsonl` by default, or
 `spool_path=` on `Run.start()`) instead of raising. `run.spooled` is `True`
-when that happened. Re-record spooled lines later with, e.g.:
+when that happened, and `run.resolved_spool_path()` is the file it actually
+wrote — `spool_path` keeps whatever you passed, `~` and all. Re-record spooled lines later with, e.g.:
 
 ```bash
 while IFS= read -r line; do

@@ -122,6 +122,86 @@ class PublicSignatureTests(unittest.TestCase):
         self.assertTrue(os.path.exists(marker), "runledger/py.typed is missing")
 
 
+class SpoolPathTests(unittest.TestCase):
+    """spool_path is resolved when the file is written, not when the module loads.
+
+    Expanding at import time baked the building machine's home into the
+    default -- and left a caller-supplied "~/..." unexpanded, since open()
+    does not expand it either. That wrote to a directory literally named "~"
+    in the process's cwd while reporting spooled=True, in the one code path
+    that only runs when the ledger is already down.
+    """
+
+    def test_default_is_left_unexpanded(self):
+        self.assertTrue(
+            run_module.DEFAULT_SPOOL_PATH.startswith("~"),
+            "the default must stay literal so it documents and travels correctly",
+        )
+
+    def test_tilde_is_expanded_at_write_time(self):
+        home = tempfile.mkdtemp()
+        cwd = os.getcwd()
+        work = tempfile.mkdtemp()
+        try:
+            os.chdir(work)
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                run = runledger.Run(
+                    project="p",
+                    server="http://127.0.0.1:1",
+                    spool_path=os.path.join("~", "runs.jsonl"),
+                )
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    run._spool({"project": "p"})
+            self.assertTrue(run.spooled)
+            self.assertTrue(
+                os.path.exists(os.path.join(home, "runs.jsonl")),
+                "record did not land in the home directory it was addressed to",
+            )
+            self.assertFalse(
+                os.path.exists("~"),
+                'a directory literally named "~" was created in the cwd',
+            )
+        finally:
+            os.chdir(cwd)
+            shutil.rmtree(home, ignore_errors=True)
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_warning_names_the_resolved_path(self):
+        home = tempfile.mkdtemp()
+        try:
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                with _clean_git():
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        with runledger.Run.start(
+                            project="p",
+                            server="http://127.0.0.1:1",
+                            spool_path=os.path.join("~", "runs.jsonl"),
+                            timeout=2.0,
+                        ):
+                            pass
+            messages = [str(w.message) for w in caught]
+            self.assertTrue(
+                any(home in m for m in messages),
+                f"warning should name a path the user can open, got {messages}",
+            )
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_absolute_paths_are_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "nested", "runs.jsonl")
+            run = runledger.Run(
+                project="p", server="http://127.0.0.1:1", spool_path=target
+            )
+            self.assertEqual(run.resolved_spool_path(), target)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                run._spool({"project": "p"})
+            self.assertTrue(os.path.exists(target))
+
+
 class RunStartValidationTests(unittest.TestCase):
     def test_no_git_commit_raises_before_body_runs(self):
         entered = False

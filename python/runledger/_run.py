@@ -55,9 +55,13 @@ from . import _git, _provenance
 
 DEFAULT_SERVER = "http://localhost:8080"
 DEFAULT_TIMEOUT = 10.0
-DEFAULT_SPOOL_PATH = os.path.join(
-    os.path.expanduser("~"), ".runledger", "spool.jsonl"
-)
+# Left unexpanded on purpose. Expanding at import time baked the building
+# machine's home directory into the default, which then rendered as an
+# absolute path in help(), IDE tooltips, and the published pdoc page -- and,
+# worse, meant a caller-supplied "~/..." was never expanded at all, since
+# open() does not do it either. Resolution happens in _spool(), at the moment
+# of writing.
+DEFAULT_SPOOL_PATH = os.path.join("~", ".runledger", "spool.jsonl")
 
 
 class UnreconstructibleRunError(RuntimeError):
@@ -267,18 +271,26 @@ class Run:
             # response, non-2xx status).
             warnings.warn(
                 f"runledger: could not record run at {self.server} "
-                f"({exc}); spooling to {self.spool_path} instead",
+                f"({exc}); spooling to {self.resolved_spool_path()} instead",
                 RuntimeWarning,
                 stacklevel=3,
             )
             self._spool(payload)
 
+    def resolved_spool_path(self) -> str:
+        """``spool_path`` with ``~`` expanded -- the file actually written.
+
+        ``spool_path`` is kept as the caller gave it; this is where it lands.
+        """
+        return os.path.expanduser(self.spool_path)
+
     def _spool(self, payload: Dict[str, Any]) -> None:
         try:
-            spool_dir = os.path.dirname(self.spool_path)
+            path = self.resolved_spool_path()
+            spool_dir = os.path.dirname(path)
             if spool_dir:
                 os.makedirs(spool_dir, exist_ok=True)
-            with open(self.spool_path, "a", encoding="utf-8") as fh:
+            with open(path, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(payload) + "\n")
             self.spooled = True
         except OSError as exc:
