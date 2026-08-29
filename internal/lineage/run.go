@@ -42,7 +42,7 @@ type Run struct {
 	RunID       string `json:"run_id"`
 	Fingerprint string `json:"fingerprint"`
 	// FingerprintVersion records which version of Compute's hashing contract
-	// produced Fingerprint -- see ADR 0004 and ADR 0012. It is provenance
+	// produced Fingerprint -- see ADR 0004 and ADR 0013. It is provenance
 	// about the fingerprint, not an input to it: hashing the version itself
 	// would be circular, the same reason Fingerprint is not hashed either.
 	//
@@ -97,10 +97,10 @@ func Terminal(s Status) bool {
 }
 
 // Fingerprint hashing contract versions. See ADR 0004 (the fingerprint input
-// is a versioned contract) and ADR 0012 (param values are normalized before
+// is a versioned contract) and ADR 0013 (param values are normalized before
 // hashing).
 const (
-	// FingerprintVersionLegacy is the contract in effect before ADR 0012:
+	// FingerprintVersionLegacy is the contract in effect before ADR 0013:
 	// Params were hashed by the literal string spelling a client sent, so
 	// "3e-4", "0.0003", and "0.00030" fingerprinted as three different
 	// experiments. There is no way to recompute a legacy fingerprint under
@@ -161,7 +161,7 @@ func (r *Run) Validate() error {
 // also normalized (normalizeParamValue) before hashing, so a param that
 // merely looks like a different spelling of the same number -- "3e-4" versus
 // "0.0003" versus "0.00030" -- hashes the same regardless of which spelling
-// a particular client happened to send (ADR 0012).
+// a particular client happened to send (ADR 0013).
 func (r *Run) Compute() string {
 	h := sha256.New()
 	write := func(parts ...string) {

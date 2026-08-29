@@ -71,7 +71,7 @@ func TestDuckDBPersistsAcrossReopen(t *testing.T) {
 }
 
 // TestDuckDBLegacyRowsDefaultToFingerprintVersion1 exercises the migration
-// this change ships (ADR 0012): fingerprint_version is added by an ALTER
+// this change ships (ADR 0013): fingerprint_version is added by an ALTER
 // TABLE ... DEFAULT, not baked into the original CREATE TABLE, precisely so
 // that a row written before this migration existed reads back tagged
 // FingerprintVersionLegacy -- never Compute run fresh against it, and never

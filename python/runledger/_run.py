@@ -251,7 +251,7 @@ class Run:
             # typed; str(3e-4) here gives "0.0003", a different string for
             # the same value). The server now normalizes any numeric-looking
             # param value before hashing it into the fingerprint (see
-            # lineage.Run.Compute and ADR 0012), so this client only has to
+            # lineage.Run.Compute and ADR 0013), so this client only has to
             # produce *a* string that parses back to the right number, not
             # *the* string another client would have produced. Duplicating
             # Go's canonicalization here would just be a second

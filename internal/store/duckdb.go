@@ -111,7 +111,7 @@ var migrations = []string{
 	// anything?" grouping.
 	`CREATE INDEX IF NOT EXISTS idx_runs_project_started ON runs (project, started_at_ns DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_runs_fingerprint ON runs (fingerprint)`,
-	// ADR 0012: Compute now normalizes numeric param spellings before
+	// ADR 0013: Compute now normalizes numeric param spellings before
 	// hashing, which changes what Fingerprint means for any run recorded
 	// from here on. Every row that already exists at the moment this
 	// migration runs was fingerprinted under the old, unnormalized contract

@@ -401,7 +401,7 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	run.Fingerprint = run.Compute()
 	// FingerprintVersion is stamped in the same breath as Fingerprint, never
 	// independently: Compute always implements CurrentFingerprintVersion
-	// (see lineage.Run.Compute's doc and ADR 0012), so any Fingerprint this
+	// (see lineage.Run.Compute's doc and ADR 0013), so any Fingerprint this
 	// line just produced is, by construction, a CurrentFingerprintVersion
 	// fingerprint. A client-supplied fingerprint_version is discarded the
 	// same way a client-supplied fingerprint is -- ADR 0001's rule ("the

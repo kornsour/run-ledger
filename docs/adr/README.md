@@ -23,7 +23,7 @@ section is a summary of these; this folder is the account.
 | [0009](0009-url-path-versioning-for-the-http-api.md) | URL path versioning (`/v1`) for the HTTP API, excluding health/readiness/metrics | Accepted |
 | [0010](0010-comparisons-is-a-resource-not-a-verb.md) | `/comparisons` is a resource, not a verb | Accepted |
 | [0011](0011-empty-string-means-not-recorded.md) | An empty string means "not recorded" | Accepted |
-| [0012](0012-param-values-are-normalized-before-hashing.md) | Param values are normalized before hashing, and the fingerprint is now versioned | Accepted |
+| [0013](0013-param-values-are-normalized-before-hashing.md) | Param values are normalized before hashing, and the fingerprint is now versioned | Accepted |
 
 ## Adding a record
 

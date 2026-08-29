@@ -73,7 +73,7 @@ func TestClientCannotDictateTheFingerprint(t *testing.T) {
 
 // TestRecordStampsCurrentFingerprintVersion pins the pairing api.record
 // makes: whatever Fingerprint a fresh record gets, it must be tagged with
-// the contract version that actually produced it (ADR 0012), not left at
+// the contract version that actually produced it (ADR 0013), not left at
 // the Go zero value or some other stale version.
 func TestRecordStampsCurrentFingerprintVersion(t *testing.T) {
 	w := post(t, srv(t), `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)

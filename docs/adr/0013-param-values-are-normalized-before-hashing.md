@@ -1,4 +1,4 @@
-# ADR 0012: Param values are normalized before hashing, and the fingerprint is now versioned
+# ADR 0013: Param values are normalized before hashing, and the fingerprint is now versioned
 
 Status: Accepted
 Date: 2026-08-29
