@@ -27,6 +27,7 @@ section is a summary of these; this folder is the account.
 | [0013](0013-param-values-are-normalized-before-hashing.md) | Param values are normalized before hashing, and the fingerprint is now versioned | Accepted |
 | [0014](0014-python-client-writes-running-then-patches-terminal.md) | The Python client writes a `running` record at start, and patches it to a terminal status at the end | Accepted |
 | [0015](0015-run-attribution-is-provenance-self-asserted.md) | Run attribution is provenance, and is self-asserted until named tokens exist | Accepted |
+| [0016](0016-record-what-the-client-attempted-to-capture.md) | Record what the client attempted to capture, not just what it captured | Accepted |
 
 ## Adding a record
 
