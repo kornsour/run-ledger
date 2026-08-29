@@ -2,12 +2,12 @@
 
 Design note -- why this makes exactly one HTTP call, at the end
 -----------------------------------------------------------------
-``PATCH /runs/{id}`` exists, so the mechanical obstacle to a "record
+``PATCH /v1/runs/{id}`` exists, so the mechanical obstacle to a "record
 running, then update to succeeded/failed" pair is gone -- ``rlctl start``
 and ``rlctl finish`` do exactly that. This client still does not, on
 purpose, and the reason is analytical rather than mechanical: nothing on
 the read side yet distinguishes a finished run from an in-flight one.
-``/fingerprints`` lists every run sharing a fingerprint without filtering on
+``/v1/fingerprints`` lists every run sharing a fingerprint without filtering on
 status, so a ``running`` record carrying a mid-training metric would be
 counted as a *repeat measurement* of that experiment. Its half-finished loss
 would widen the group's spread and could rank the fingerprint top of "which
@@ -52,6 +52,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, Optional
 
 from . import _git, _provenance
+from .read import API_VERSION
 
 DEFAULT_SERVER = "http://localhost:8080"
 DEFAULT_TIMEOUT = 10.0
@@ -250,7 +251,7 @@ class Run:
     def _send(self, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            self.server.rstrip("/") + "/runs",
+            self.server.rstrip("/") + API_VERSION + "/runs",
             data=body,
             method="POST",
             headers={"Content-Type": "application/json"},

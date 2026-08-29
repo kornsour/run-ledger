@@ -35,7 +35,7 @@ func authed(method, path, token string) *http.Request {
 func post(t *testing.T, h http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	return w
@@ -93,7 +93,7 @@ func TestDirtyTreeWithoutConfigHashIsRefused(t *testing.T) {
 
 func TestGetUnknownRunIs404(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs/nope", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs/nope", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", w.Code)
 	}
@@ -101,7 +101,7 @@ func TestGetUnknownRunIs404(t *testing.T) {
 
 func TestCompareRequiresBothIDs(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/compare?a=x", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/comparisons?a=x", nil))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("want 400, got %d", w.Code)
 	}
@@ -122,7 +122,7 @@ func TestCompareFlagsUnattributableDifference(t *testing.T) {
 	b := idOf(`{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/compare?a="+a+"&b="+b, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/comparisons?a="+a+"&b="+b, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -154,7 +154,7 @@ func TestCompareFlagsUnattributableDifference(t *testing.T) {
 func TestBadLimitIsRejected(t *testing.T) {
 	for _, limit := range []string{"-3", "0", "not-a-number"} {
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?limit="+limit, nil))
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?limit="+limit, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("limit=%s: want 400, got %d", limit, w.Code)
 		}
@@ -177,7 +177,7 @@ func TestSinceUntilNarrowListing(t *testing.T) {
 	rec("in-range", base.Add(time.Minute))
 	rec("after", base.Add(time.Hour))
 
-	url := fmt.Sprintf("/runs?since=%s&until=%s",
+	url := fmt.Sprintf("/v1/runs?since=%s&until=%s",
 		base.Format(time.RFC3339), base.Add(time.Hour).Format(time.RFC3339))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
@@ -217,7 +217,7 @@ func TestSinceUntilCombineWithOtherFilters(t *testing.T) {
 	rec("beta-in", "beta", base)
 	rec("alpha-out", "alpha", base.Add(-time.Hour))
 
-	url := fmt.Sprintf("/runs?project=alpha&status=created&since=%s&until=%s",
+	url := fmt.Sprintf("/v1/runs?project=alpha&status=created&since=%s&until=%s",
 		base.Format(time.RFC3339), base.Add(time.Hour).Format(time.RFC3339))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
@@ -238,7 +238,7 @@ func TestSinceUntilCombineWithOtherFilters(t *testing.T) {
 func TestMalformedSinceUntilIsRejected(t *testing.T) {
 	for _, q := range []string{"since=not-a-time", "until=not-a-time", "since=2024-01-01"} {
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?"+q, nil))
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?"+q, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: want 400, got %d: %s", q, w.Code, w.Body)
 		}
@@ -251,7 +251,7 @@ func TestBadCursorIsRejected(t *testing.T) {
 			continue // empty cursor means "from the top", not an error
 		}
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?cursor="+cursor, nil))
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?cursor="+cursor, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("cursor=%s: want 400, got %d: %s", cursor, w.Code, w.Body)
 		}
@@ -260,7 +260,7 @@ func TestBadCursorIsRejected(t *testing.T) {
 
 func TestUnknownQueryParamIsRejected(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?projct=demo", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?projct=demo", nil))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a typo'd query parameter must be refused, got %d: %s", w.Code, w.Body)
 	}
@@ -268,7 +268,7 @@ func TestUnknownQueryParamIsRejected(t *testing.T) {
 
 func TestInvalidStatusIsRejected(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?status=succeded", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?status=succeded", nil))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a typo'd status must be refused, not silently return an empty result, got %d: %s", w.Code, w.Body)
 	}
@@ -282,7 +282,7 @@ func TestValidStatusIsAccepted(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?status=created", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?status=created", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -305,7 +305,7 @@ func TestListWithRecognizedParamsStillWorks(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
 	fingerprint := run["fingerprint"].(string)
 
-	url := fmt.Sprintf("/runs?project=p&git_commit=abc&fingerprint=%s&status=created&device=gpu0&limit=10&cursor=", fingerprint)
+	url := fmt.Sprintf("/v1/runs?project=p&git_commit=abc&fingerprint=%s&status=created&device=gpu0&limit=10&cursor=", fingerprint)
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
 	if w.Code != http.StatusOK {
@@ -323,7 +323,7 @@ func TestListDefaultsAndCapsLimit(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?project=p", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs?project=p", nil))
 	var got struct {
 		Runs  []map[string]any `json:"runs"`
 		Count int              `json:"count"`
@@ -338,7 +338,7 @@ func TestListDefaultsAndCapsLimit(t *testing.T) {
 	}
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/runs?project=p&limit=%d", MaxListLimit+1000), nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/v1/runs?project=p&limit=%d", MaxListLimit+1000), nil))
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
 	if got.Limit != MaxListLimit {
 		t.Fatalf("a request over MaxListLimit must be clamped, got effective limit %d", got.Limit)
@@ -362,7 +362,7 @@ func TestListCursorPagesWithoutSkippingOrRepeating(t *testing.T) {
 	seen := map[string]bool{}
 	cursor := ""
 	for i := 0; i < n+1; i++ { // +1 guards against a cursor that never terminates
-		url := "/runs?project=p&limit=2"
+		url := "/v1/runs?project=p&limit=2"
 		if cursor != "" {
 			url += "&cursor=" + cursor
 		}
@@ -469,7 +469,7 @@ func TestMetricsEndpointReportsStoreConflict(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	// Same run id, different content -> conflict.
-	req := httptest.NewRequest(http.MethodPost, "/runs",
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs",
 		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
@@ -488,14 +488,14 @@ func TestNoTokenConfiguredAllowsEverything(t *testing.T) {
 	h := srv(t) // no Auth option: the default, single-user, unauthenticated server.
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, authed(http.MethodGet, "/runs", ""))
+	h.ServeHTTP(w, authed(http.MethodGet, "/v1/runs", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200 with no token configured, got %d: %s", w.Code, w.Body)
 	}
 
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	w = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusCreated {
@@ -512,10 +512,10 @@ func TestTokenConfiguredRefusesMissingOrWrongOnBothVerbs(t *testing.T) {
 		path   string
 		token  string
 	}{
-		{"read, no token", http.MethodGet, "/runs", ""},
-		{"read, wrong token", http.MethodGet, "/runs", "nope"},
-		{"write, no token", http.MethodPost, "/runs", ""},
-		{"write, wrong token", http.MethodPost, "/runs", "nope"},
+		{"read, no token", http.MethodGet, "/v1/runs", ""},
+		{"read, wrong token", http.MethodGet, "/v1/runs", "nope"},
+		{"write, no token", http.MethodPost, "/v1/runs", ""},
+		{"write, wrong token", http.MethodPost, "/v1/runs", "nope"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -529,14 +529,14 @@ func TestTokenConfiguredRefusesMissingOrWrongOnBothVerbs(t *testing.T) {
 
 	// The correct token still works on both verbs.
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, authed(http.MethodGet, "/runs", "write-secret"))
+	h.ServeHTTP(w, authed(http.MethodGet, "/v1/runs", "write-secret"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200 with the correct token, got %d: %s", w.Code, w.Body)
 	}
 
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	w = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer write-secret")
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
@@ -549,14 +549,14 @@ func TestReadTokenCannotWrite(t *testing.T) {
 	h := srvWithAuth(t, Auth{WriteToken: "write-secret", ReadToken: "read-secret"})
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, authed(http.MethodGet, "/runs", "read-secret"))
+	h.ServeHTTP(w, authed(http.MethodGet, "/v1/runs", "read-secret"))
 	if w.Code != http.StatusOK {
 		t.Fatalf("read token should be able to read, got %d: %s", w.Code, w.Body)
 	}
 
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	w = httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer read-secret")
 	h.ServeHTTP(w, req)
 	// The token is valid, just scoped to reads -- that's a 403 (scope
@@ -575,7 +575,7 @@ func TestMissingOrGarbageTokenIs401WithChallenge(t *testing.T) {
 
 	for _, token := range []string{"", "garbage"} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, authed(http.MethodGet, "/runs", token))
+		h.ServeHTTP(w, authed(http.MethodGet, "/v1/runs", token))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q against a read endpoint: want 401, got %d: %s", token, w.Code, w.Body)
 		}
@@ -584,7 +584,7 @@ func TestMissingOrGarbageTokenIs401WithChallenge(t *testing.T) {
 		}
 
 		w = httptest.NewRecorder()
-		h.ServeHTTP(w, authed(http.MethodPost, "/runs", token))
+		h.ServeHTTP(w, authed(http.MethodPost, "/v1/runs", token))
 		if w.Code != http.StatusUnauthorized {
 			t.Fatalf("token %q against a write endpoint: want 401, got %d: %s", token, w.Code, w.Body)
 		}
@@ -603,7 +603,7 @@ func TestFingerprintsListOnlyIncludesRepeats(t *testing.T) {
 	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":2,"metrics":{"loss":0.1}}`)
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?project=p", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -640,7 +640,7 @@ func TestFingerprintsListMinRunsIncludesLoneRuns(t *testing.T) {
 
 	for _, minRuns := range []string{"1", "0"} {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&min_runs="+minRuns, nil))
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?project=p&min_runs="+minRuns, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("min_runs=%s: want 200, got %d: %s", minRuns, w.Code, w.Body)
 		}
@@ -675,7 +675,7 @@ func TestFingerprintsListMinRunsIncludesLoneRuns(t *testing.T) {
 func TestFingerprintsListInvalidMinRunsIs400(t *testing.T) {
 	for _, minRuns := range []string{"-1", "not-a-number", "1.5"} {
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?min_runs="+minRuns, nil))
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?min_runs="+minRuns, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("min_runs=%s: want 400, got %d: %s", minRuns, w.Code, w.Body)
 		}
@@ -711,7 +711,7 @@ func TestFingerprintsListPaginatesWithoutSkippingOrRepeating(t *testing.T) {
 
 	// First page.
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&limit=2", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?project=p&limit=2", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("page 1: want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -736,7 +736,7 @@ func TestFingerprintsListPaginatesWithoutSkippingOrRepeating(t *testing.T) {
 	var last page
 	for i := 0; i < n; i++ { // generous guard against a cursor that never terminates
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?project=p&limit=2&cursor="+cursor, nil))
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?project=p&limit=2&cursor="+cursor, nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("follow-up page: want 200, got %d: %s", w.Code, w.Body)
 		}
@@ -767,7 +767,7 @@ func TestFingerprintsListPaginatesWithoutSkippingOrRepeating(t *testing.T) {
 func TestFingerprintsListInvalidCursorIsRejected(t *testing.T) {
 	for _, cursor := range []string{"not-base64url!!", "aGVsbG8"} {
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?cursor="+cursor, nil))
+		srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?cursor="+cursor, nil))
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("cursor=%s: want 400, got %d: %s", cursor, w.Code, w.Body)
 		}
@@ -780,7 +780,7 @@ func TestFingerprintsListEmptyResultIsEmptyArrayNotNull(t *testing.T) {
 	// JSON null, not []; unmarshaling into a Go slice would hide that bug
 	// (nil and [] decode the same way), so this checks the raw body text.
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -794,7 +794,7 @@ func TestFingerprintsListEmptyResultIsEmptyArrayNotNull(t *testing.T) {
 	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.4}}`)
 	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"metrics":{"loss":0.5}}`)
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints?min_runs=5", nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints?min_runs=5", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -813,7 +813,7 @@ func TestFingerprintOneGroupReportsMetricStats(t *testing.T) {
 	fp := a["fingerprint"].(string)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/"+fp, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -849,7 +849,7 @@ func TestFingerprintSingleRunIsNoRepeats(t *testing.T) {
 	fp := created["fingerprint"].(string)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/"+fp, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/"+fp, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -870,7 +870,7 @@ func TestFingerprintSingleRunIsNoRepeats(t *testing.T) {
 
 func TestFingerprintUnknownIs404(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/fingerprints/nope", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/nope", nil))
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", w.Code)
 	}
@@ -879,7 +879,7 @@ func TestFingerprintUnknownIs404(t *testing.T) {
 func patch(t *testing.T, h http.Handler, id, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPatch, "/runs/"+id, strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/"+id, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
 	return w
@@ -923,7 +923,7 @@ func TestRecordedRunOmitsEndedAtUntilItEnds(t *testing.T) {
 	id := created["run_id"].(string)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs/"+id, nil))
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/runs/"+id, nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
 	}
@@ -1063,7 +1063,7 @@ func TestRecordIDTakenHasSpecificCode(t *testing.T) {
 	post(t, h, body) // first record succeeds
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/runs",
+	req := httptest.NewRequest(http.MethodPost, "/v1/runs",
 		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
 	req.Header.Set("Content-Type", "application/json")
 	h.ServeHTTP(w, req)
@@ -1079,7 +1079,7 @@ func TestRecordIDTakenHasSpecificCode(t *testing.T) {
 func TestErrorBodyEchoesRequestID(t *testing.T) {
 	h := srv(t)
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/runs/nope", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/runs/nope", nil)
 	h.ServeHTTP(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("want 404, got %d: %s", w.Code, w.Body)
@@ -1136,7 +1136,7 @@ func TestUpdateUnknownFieldIsRejected(t *testing.T) {
 
 func TestUpdateRequiresWriteToken(t *testing.T) {
 	h := srvWithAuth(t, Auth{WriteToken: "write-secret", ReadToken: "read-secret"})
-	req := httptest.NewRequest(http.MethodPatch, "/runs/whatever", strings.NewReader(`{"status":"running"}`))
+	req := httptest.NewRequest(http.MethodPatch, "/v1/runs/whatever", strings.NewReader(`{"status":"running"}`))
 	req.Header.Set("Authorization", "Bearer read-secret")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -1176,7 +1176,7 @@ func TestUnmatchedPathIs404WithJSONEnvelope(t *testing.T) {
 
 func TestDisallowedMethodIs405WithAllowHeader(t *testing.T) {
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/runs", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/runs", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d: %s", w.Code, w.Body)
 	}
@@ -1189,7 +1189,7 @@ func TestDisallowedMethodIs405WithAllowHeader(t *testing.T) {
 	}
 	allow := w.Header().Get("Allow")
 	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "POST") {
-		t.Fatalf("want Allow to list GET and POST for /runs, got %q", allow)
+		t.Fatalf("want Allow to list GET and POST for /v1/runs, got %q", allow)
 	}
 }
 
@@ -1204,23 +1204,23 @@ func TestRecordSetsLocationHeader(t *testing.T) {
 	if runID == "" {
 		t.Fatalf("no run id assigned: %s", w.Body)
 	}
-	want := "/runs/" + runID
+	want := "/v1/runs/" + runID
 	if got := w.Header().Get("Location"); got != want {
 		t.Fatalf("want Location %q, got %q", want, got)
 	}
 }
 
 func TestDisallowedMethodOnPathParamRouteIs405(t *testing.T) {
-	// /runs/{id} only supports GET and PATCH -- DELETE must be refused the
+	// /v1/runs/{id} only supports GET and PATCH -- DELETE must be refused the
 	// same way, with the path-templated route resolved correctly.
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/runs/xyz", nil))
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/v1/runs/xyz", nil))
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d: %s", w.Code, w.Body)
 	}
 	allow := w.Header().Get("Allow")
 	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "PATCH") {
-		t.Fatalf("want Allow to list GET and PATCH for /runs/{id}, got %q", allow)
+		t.Fatalf("want Allow to list GET and PATCH for /v1/runs/{id}, got %q", allow)
 	}
 }
 
@@ -1236,7 +1236,7 @@ func TestRecordWrongContentTypeIs415(t *testing.T) {
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	for _, ct := range []string{"text/plain", ""} {
 		w := httptest.NewRecorder()
-		srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", ct, body))
+		srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/v1/runs", ct, body))
 		if w.Code != http.StatusUnsupportedMediaType {
 			t.Fatalf("Content-Type %q: want 415, got %d: %s", ct, w.Code, w.Body)
 		}
@@ -1250,7 +1250,7 @@ func TestRecordWrongContentTypeIs415(t *testing.T) {
 func TestRecordAcceptsJSONWithCharsetParameter(t *testing.T) {
 	body := `{"project":"p","git_commit":"abc","config_hash":"cfg"}`
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", "application/json; charset=utf-8", body))
+	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/v1/runs", "application/json; charset=utf-8", body))
 	if w.Code != http.StatusCreated {
 		t.Fatalf("a charset parameter must not be mistaken for a wrong media type, got %d: %s", w.Code, w.Body)
 	}
@@ -1264,7 +1264,7 @@ func TestUpdateWrongContentTypeIs415(t *testing.T) {
 	id := created["run_id"].(string)
 
 	w = httptest.NewRecorder()
-	h.ServeHTTP(w, requestWithContentType(http.MethodPatch, "/runs/"+id, "text/plain", `{"status":"running"}`))
+	h.ServeHTTP(w, requestWithContentType(http.MethodPatch, "/v1/runs/"+id, "text/plain", `{"status":"running"}`))
 	if w.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("want 415, got %d: %s", w.Code, w.Body)
 	}
@@ -1281,7 +1281,7 @@ func TestOversizedBodyIsCleanBadRequest(t *testing.T) {
 	body := fmt.Sprintf(`{"project":"p","git_commit":"abc","config_hash":"cfg","params":{"huge":%q}}`, big)
 
 	w := httptest.NewRecorder()
-	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/runs", "application/json", body))
+	srv(t).ServeHTTP(w, requestWithContentType(http.MethodPost, "/v1/runs", "application/json", body))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a body over the cap must fail cleanly as 400, got %d: %s", w.Code, w.Body)
 	}

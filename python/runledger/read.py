@@ -31,6 +31,11 @@ from typing import Any, Dict, List, Optional
 DEFAULT_SERVER = "http://localhost:8080"
 DEFAULT_TIMEOUT = 10.0
 
+# Every resource route on the server is versioned under this path segment --
+# see ADR 0009 in the repo. health/ready/metrics are the only unversioned
+# routes, and nothing in this module calls them.
+API_VERSION = "/v1"
+
 # The server caps a page at 500 whatever a client asks for, and echoes the
 # limit it actually applied. Asking for the cap means the fewest round trips
 # for a walk; the pagination loop below follows next_cursor regardless, so
@@ -51,9 +56,19 @@ class RunNotFoundError(LedgerError):
 
 
 def _base(server: Optional[str]) -> str:
+    """The ledger's bare address, with no API version segment -- what a
+    person reads in an error message, and what they'd type into a browser
+    or curl. Kept separate from the URL a request is actually sent to
+    (_url, below) so "the ledger at http://host:port answered/could not be
+    reached" doesn't read as if /v1 were part of the server's address.
+    """
     if server:
         return server.rstrip("/")
     return os.environ.get("RUNLEDGER_ADDR", DEFAULT_SERVER).rstrip("/")
+
+
+def _url(server: Optional[str], path: str) -> str:
+    return _base(server) + API_VERSION + path
 
 
 def _get(
@@ -71,7 +86,7 @@ def _get(
     intend.
     """
     query = {k: str(v) for k, v in (params or {}).items() if v not in (None, "")}
-    url = _base(server) + path
+    url = _url(server, path)
     if query:
         url += "?" + urllib.parse.urlencode(query)
 

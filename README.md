@@ -64,7 +64,7 @@ R=$(./bin/rlctl record --project demo --seed 1 --config-hash cfg1)  # status: cr
 
 `start`/`finish`/`fail` only move a run forward — `created → running →
 {succeeded, failed, cancelled}` — and can never change what experiment the
-run was; see [PATCH `/runs/{id}`](#api) below.
+run was; see [PATCH `/v1/runs/{id}`](#api) below.
 
 ```
 same experiment (fingerprints match)
@@ -132,16 +132,22 @@ implementation cannot quietly disagree about ordering or idempotency.
 
 | Method | Path | |
 |---|---|---|
-| `POST` | `/runs` | record a run; the server assigns the fingerprint and id |
-| `PATCH` | `/runs/{id}` | update a run's provenance: `status`, `ended_at`, `checkpoint_uri`, `metrics`, `host`, `device`, `framework_version` |
-| `GET` | `/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`; paginated, see below |
-| `GET` | `/runs/{id}` | one run |
-| `GET` | `/compare?a=X&b=Y` | structured diff, with `unattributable` |
-| `GET` | `/fingerprints?project=P` | fingerprints with more than one run, ranked by widest relative metric spread |
-| `GET` | `/fingerprints/{fingerprint}` | one group: per-metric count/min/max/mean/stddev, or `no_repeats` for a lone run |
-| `GET` | `/healthz` | liveness |
+| `POST` | `/v1/runs` | record a run; the server assigns the fingerprint and id |
+| `PATCH` | `/v1/runs/{id}` | update a run's provenance: `status`, `ended_at`, `checkpoint_uri`, `metrics`, `host`, `device`, `framework_version` |
+| `GET` | `/v1/runs` | list, filtered by `project`, `git_commit`, `fingerprint`, `status`, `device`; paginated, see below |
+| `GET` | `/v1/runs/{id}` | one run |
+| `GET` | `/v1/comparisons?a=X&b=Y` | structured diff of two runs, with `unattributable` |
+| `GET` | `/v1/fingerprints?project=P` | fingerprints with more than one run, ranked by widest relative metric spread |
+| `GET` | `/v1/fingerprints/{fingerprint}` | one group: per-metric count/min/max/mean/stddev, or `no_repeats` for a lone run |
+| `GET` | `/healthz` | liveness — unversioned; see [ADR 0009](docs/adr/0009-url-path-versioning-for-the-http-api.md) |
 | `GET` | `/readyz` | readiness — the store answers a call |
 | `GET` | `/metrics` | self-metrics, Prometheus exposition format |
+
+Resource routes are versioned (`/v1/...`); the three operational endpoints
+above are not — see [ADR 0009](docs/adr/0009-url-path-versioning-for-the-http-api.md).
+`/v1/comparisons` addresses a comparison by the pair of run ids being
+compared rather than nesting it under one of the two runs; see
+[ADR 0010](docs/adr/0010-comparisons-is-a-resource-not-a-verb.md).
 
 The full contract, including request/response schemas, lives in
 [`docs/openapi.yaml`](docs/openapi.yaml). It has to stay in sync with
@@ -175,7 +181,7 @@ being true.
 
 ### Pagination
 
-`GET /runs` returns a page, not the whole result set:
+`GET /v1/runs` returns a page, not the whole result set:
 
 ```json
 {"runs": [ ... ], "count": 50, "limit": 50, "next_cursor": "v1:..."}
@@ -198,7 +204,7 @@ being true.
   its cursor's position, not a single fixed snapshot of the whole listing.
   A row recorded after a traversal begins, and sorting behind whatever
   position the traversal has already reached, is simply not visited by that
-  traversal — it is exactly the kind of row a fresh `GET /runs` (no cursor)
+  traversal — it is exactly the kind of row a fresh `GET /v1/runs` (no cursor)
   would show first. For an append-mostly ledger this is the cheap, honest
   contract: no page ever repeats or skips a row that existed before the
   traversal reached it, and nothing is promised about rows that did not.
@@ -277,7 +283,7 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
 - **Re-recording identical content is idempotent; different content under the
   same id is a conflict.** Silently overwriting a lineage record would make
   history unreliable.
-- **`PATCH /runs/{id}` moves a run's provenance forward; it can never rewrite
+- **`PATCH /v1/runs/{id}` moves a run's provenance forward; it can never rewrite
   what experiment it was.** Identity fields (`project`, `git_commit`,
   `git_dirty`, `config_hash`, `dataset_version`, `model_version`, `seed`,
   `params`) are checked against the stored run and a mismatch is a `409`, not
@@ -303,7 +309,7 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   time rather than tracked as a local counter, since recording is idempotent
   and a retried record must not inflate it.
 - **The Python client writes the ledger once, at the end of a run, not once at
-  each end.** `POST /runs` has no update path yet, so `runledger.Run.start()`
+  each end.** `POST /v1/runs` has no update path yet, so `runledger.Run.start()`
   buffers status and metrics locally and sends one record when the outcome is
   known, rather than a `running` record it cannot later revise.
   ([ADR 0005](docs/adr/0005-python-client-writes-once-at-the-end.md))
@@ -314,7 +320,7 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   `CGO_ENABLED=0` no longer builds this module, and the container image needs a
   C toolchain and a matching libc instead of `distroless/static`.
   ([ADR 0006](docs/adr/0006-duckdb-store-backend-and-the-cgo-cost.md))
-- **`GET /runs` paginates by keyset cursor, not `LIMIT`/`OFFSET`, and is capped
+- **`GET /v1/runs` paginates by keyset cursor, not `LIMIT`/`OFFSET`, and is capped
   server-side.** An offset shifts under concurrent inserts, silently skipping a
   row a client paging through history should have seen; a cursor encoding the
   last row's sort key does not. A page is consistent with the ledger as of the
@@ -328,9 +334,21 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   side's. A `400`/`409` is quarantined to `<spool>.rejected.jsonl` instead of
   being retried forever, since retrying the same bytes against the same
   server gets the same answer every time; replay is safe to interrupt and
-  re-run at all because `POST /runs` is idempotent for identical content
+  re-run at all because `POST /v1/runs` is idempotent for identical content
   under the same id.
   ([ADR 0008](docs/adr/0008-replay-raises-quarantines-and-tracks-a-read-offset.md))
+- **Resource routes are versioned with a `/v1` URL path prefix; health,
+  readiness, and metrics are not.** A path segment can be routed on
+  unmodified, so a future breaking change can add `/v2` and run it alongside
+  `/v1` for as long as a transition needs, without touching the ops
+  endpoints a probe or a scrape config already points at.
+  ([ADR 0009](docs/adr/0009-url-path-versioning-for-the-http-api.md))
+- **`/v1/comparisons?a=&b=` replaces `GET /compare`.** A comparison is
+  identified by the pair of run ids being compared, not owned by either one,
+  so it sits next to `/v1/runs` and `/v1/fingerprints` as its own resource
+  collection instead of a verb hanging off the root — and the query-param
+  shape has somewhere to grow if comparing more than two runs ever matters.
+  ([ADR 0010](docs/adr/0010-comparisons-is-a-resource-not-a-verb.md))
 
 ## Status
 

@@ -20,6 +20,8 @@ section is a summary of these; this folder is the account.
 | [0006](0006-duckdb-store-backend-and-the-cgo-cost.md) | `store.DuckDB` as the durable backend, and accepting cgo to get it | Accepted |
 | [0007](0007-keyset-pagination-cursor-consistency.md) | `GET /runs` paginates by keyset cursor, and a page is consistent with the cursor's position, not a fixed snapshot | Accepted |
 | [0008](0008-replay-raises-quarantines-and-tracks-a-read-offset.md) | `replay_spool()` raises on an unreachable ledger, quarantines permanent rejections, and rewrites the spool by tracked read offset | Accepted |
+| [0009](0009-url-path-versioning-for-the-http-api.md) | URL path versioning (`/v1`) for the HTTP API, excluding health/readiness/metrics | Accepted |
+| [0010](0010-comparisons-is-a-resource-not-a-verb.md) | `/comparisons` is a resource, not a verb | Accepted |
 
 ## Adding a record
 

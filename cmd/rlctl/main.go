@@ -20,6 +20,11 @@ import (
 	"github.com/kornsour/run-ledger/internal/spread"
 )
 
+// apiVersion is the path segment every resource route on the server is
+// versioned under -- see ADR 0009. Kept in one place so a future version
+// bump is one edit here, not one per call site below.
+const apiVersion = "/v1"
+
 const usage = `rlctl — record and compare experiment runs
 
   rlctl record --project P [--seed N] [--dataset V] [--model V] [--param k=v ...] [--metric k=v ...]
@@ -143,7 +148,7 @@ func cmdRecord(args []string) error {
 
 	body, _ := json.Marshal(run)
 	var out lineage.Run
-	if err := call(http.MethodPost, *server+"/runs", body, &out); err != nil {
+	if err := call(http.MethodPost, *server, "/runs", body, &out); err != nil {
 		return err
 	}
 	fmt.Println(out.RunID)
@@ -227,7 +232,7 @@ func patchRun(server, runID string, fields map[string]any) (lineage.Run, error) 
 		return lineage.Run{}, err
 	}
 	var out lineage.Run
-	if err := call(http.MethodPatch, server+"/runs/"+url.PathEscape(runID), body, &out); err != nil {
+	if err := call(http.MethodPatch, server, "/runs/"+url.PathEscape(runID), body, &out); err != nil {
 		return lineage.Run{}, err
 	}
 	return out, nil
@@ -255,7 +260,7 @@ func cmdList(args []string) error {
 		Count      int           `json:"count"`
 		NextCursor string        `json:"next_cursor"`
 	}
-	if err := call(http.MethodGet, *server+"/runs?"+q.Encode(), nil, &out); err != nil {
+	if err := call(http.MethodGet, *server, "/runs?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
 	if out.Count == 0 {
@@ -285,7 +290,7 @@ func cmdShow(args []string) error {
 		return fmt.Errorf("show takes exactly one run id")
 	}
 	var run lineage.Run
-	if err := call(http.MethodGet, *server+"/runs/"+url.PathEscape(fs.Arg(0)), nil, &run); err != nil {
+	if err := call(http.MethodGet, *server, "/runs/"+url.PathEscape(fs.Arg(0)), nil, &run); err != nil {
 		return err
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -302,7 +307,7 @@ func cmdDiff(args []string) error {
 	}
 	q := url.Values{"a": {fs.Arg(0)}, "b": {fs.Arg(1)}}
 	var out compare.Result
-	if err := call(http.MethodGet, *server+"/compare?"+q.Encode(), nil, &out); err != nil {
+	if err := call(http.MethodGet, *server, "/comparisons?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
 	if len(out.Fields) == 0 {
@@ -348,7 +353,7 @@ func spreadList(server, project string) error {
 		Groups []spread.Group `json:"groups"`
 		Count  int            `json:"count"`
 	}
-	if err := call(http.MethodGet, server+"/fingerprints?"+q.Encode(), nil, &out); err != nil {
+	if err := call(http.MethodGet, server, "/fingerprints?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
 	if out.Count == 0 {
@@ -366,7 +371,7 @@ func spreadList(server, project string) error {
 
 func spreadOne(server, fingerprint string) error {
 	var g spread.Group
-	if err := call(http.MethodGet, server+"/fingerprints/"+url.PathEscape(fingerprint), nil, &g); err != nil {
+	if err := call(http.MethodGet, server, "/fingerprints/"+url.PathEscape(fingerprint), nil, &g); err != nil {
 		return err
 	}
 	fmt.Printf("fingerprint %s — %d run(s)\n", g.Fingerprint, g.Count)
@@ -406,8 +411,10 @@ func provenanceFields(diffs []spread.ProvenanceDiff) string {
 	return strings.Join(names, ", ")
 }
 
-func call(method, endpoint string, body []byte, out any) error {
-	req, err := http.NewRequest(method, endpoint, bytes.NewReader(body))
+// call issues one request against path on server, splicing in apiVersion so
+// every caller gets it for free instead of remembering to add it by hand.
+func call(method, server, path string, body []byte, out any) error {
+	req, err := http.NewRequest(method, server+apiVersion+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
