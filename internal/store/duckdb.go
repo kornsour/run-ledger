@@ -144,6 +144,32 @@ var migrations = []string{
 	// applied atomically -- see migrate's per-entry transaction below.
 	`ALTER TABLE runs ADD COLUMN submitter_claim VARCHAR DEFAULT ''`,
 	`ALTER TABLE runs ADD COLUMN job_id VARCHAR DEFAULT ''`,
+	// ADR 0016: a capture declaration records what a client attempted to
+	// capture, not what it captured -- a fact about the recording process,
+	// never hashed, kept alongside the run the same way submitter_claim and
+	// job_id are. Two columns, not one: capture_declared is what lets a
+	// pre-migration row (or any run whose client never sends the field)
+	// read back with lineage.Run.Capture == nil rather than a declaration
+	// that merely happens to be empty -- those are different claims (see
+	// lineage.Run.Capture's doc comment), and completeness.py's
+	// peer-comparison fallback depends on telling them apart. DEFAULT
+	// FALSE / DEFAULT '' backfills every pre-existing row to exactly that
+	// "no declaration" state; NOT NULL is omitted for the same reason it is
+	// on every other ALTER TABLE ADD COLUMN in this slice -- this DuckDB
+	// build rejects an inline constraint on a new column.
+	`ALTER TABLE runs ADD COLUMN capture_declared BOOLEAN DEFAULT FALSE`,
+	`ALTER TABLE runs ADD COLUMN capture_client VARCHAR DEFAULT ''`,
+	// Attempted is a variable-length list of field names, not a scalar, so
+	// it gets a side table the same way Params and Metrics do -- a row per
+	// (run_id, field) rather than a JSON blob in a column, so a future
+	// "which runs attempted device" query is a real predicate. No value
+	// column: membership is the only fact this table records, the same
+	// shape a set takes when SQL has no native set type.
+	`CREATE TABLE IF NOT EXISTS run_capture_attempted (
+		run_id VARCHAR NOT NULL REFERENCES runs(run_id),
+		field  VARCHAR NOT NULL,
+		PRIMARY KEY (run_id, field)
+	)`,
 }
 
 func (d *DuckDB) migrate(ctx context.Context) error {
@@ -195,6 +221,13 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+	// See lineage.Run.NormalizeCapture's doc comment: this backend in
+	// particular reads Capture.Attempted back from a side table with no
+	// row order of its own (see get(), below), so the incoming value must
+	// agree with that canonical order before the idempotency comparison a
+	// few lines down, or a byte-identical retry could be refused as a
+	// conflict purely because of ordering.
+	r.NormalizeCapture()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -220,17 +253,18 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	if r.EndedAt != nil {
 		endedAt = r.EndedAt.UnixNano()
 	}
+	captureDeclared, captureClient := captureColumns(r.Capture)
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO runs (
 			run_id, project, git_commit, git_dirty, config_hash, dataset_version,
 			model_version, seed, fingerprint, fingerprint_version, host, device,
-			framework_version, submitter_claim, job_id, status, started_at_ns,
-			ended_at_ns, checkpoint_uri
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			framework_version, submitter_claim, job_id, capture_declared,
+			capture_client, status, started_at_ns, ended_at_ns, checkpoint_uri
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Project, r.GitCommit, r.GitDirty, r.ConfigHash, r.DatasetVersion,
 		r.ModelVersion, r.Seed, r.Fingerprint, r.FingerprintVersion, r.Host, r.Device,
-		r.FrameworkVersion, r.SubmitterClaim, r.JobID, string(r.Status), r.StartedAt.UnixNano(),
-		endedAt, r.CheckpointURI,
+		r.FrameworkVersion, r.SubmitterClaim, r.JobID, captureDeclared, captureClient,
+		string(r.Status), r.StartedAt.UnixNano(), endedAt, r.CheckpointURI,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting run: %w", err)
@@ -248,8 +282,29 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 			return fmt.Errorf("inserting metric %q: %w", k, err)
 		}
 	}
+	if r.Capture != nil {
+		for _, field := range r.Capture.Attempted {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO run_capture_attempted (run_id, field) VALUES (?, ?)`, r.RunID, field); err != nil {
+				return fmt.Errorf("inserting capture.attempted %q: %w", field, err)
+			}
+		}
+	}
 
 	return tx.Commit()
+}
+
+// captureColumns maps a (possibly nil) *lineage.CaptureDeclaration to the
+// two scalar columns runs stores it in. capture_declared is what carries
+// "no declaration at all" (nil) as a state distinct from "declared, with an
+// empty client name" (non-nil, Client == "") -- collapsing the two the way
+// ADR 0011 collapses "" and absent for the scalar fields would erase the
+// exact distinction ADR 0016 exists to make available.
+func captureColumns(c *lineage.CaptureDeclaration) (declared bool, client string) {
+	if c == nil {
+		return false, ""
+	}
+	return true, c.Client
 }
 
 // Update applies a partial, provenance-only change to an already-recorded
@@ -320,11 +375,11 @@ func (d *DuckDB) Get(ctx context.Context, runID string) (lineage.Run, error) {
 }
 
 func (d *DuckDB) get(ctx context.Context, q queryer, runID string) (lineage.Run, error) {
-	r, err := scanRun(q.QueryRowContext(ctx, `
+	r, captureDeclared, captureClient, err := scanRun(q.QueryRowContext(ctx, `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
 			model_version, seed, fingerprint, fingerprint_version, host, device,
-			framework_version, submitter_claim, job_id, status, started_at_ns,
-			ended_at_ns, checkpoint_uri
+			framework_version, submitter_claim, job_id, capture_declared,
+			capture_client, status, started_at_ns, ended_at_ns, checkpoint_uri
 		FROM runs WHERE run_id = ?`, runID))
 	if err != nil {
 		return lineage.Run{}, err
@@ -337,24 +392,31 @@ func (d *DuckDB) get(ctx context.Context, q queryer, runID string) (lineage.Run,
 		return lineage.Run{}, err
 	}
 	r.Metrics = metricsRaw
+	if captureDeclared {
+		attempted, err := loadCaptureAttempted(ctx, q, runID)
+		if err != nil {
+			return lineage.Run{}, err
+		}
+		r.Capture = &lineage.CaptureDeclaration{Client: captureClient, Attempted: attempted}
+	}
 	return r, nil
 }
 
-func scanRun(row *sql.Row) (lineage.Run, error) {
-	var r lineage.Run
+func scanRun(row *sql.Row) (r lineage.Run, captureDeclared bool, captureClient string, err error) {
 	var status string
 	var startedAtNS int64
 	var endedAtNS sql.NullInt64
-	err := row.Scan(
+	err = row.Scan(
 		&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
 		&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
-		&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+		&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &captureDeclared, &captureClient,
+		&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 	)
 	if err == sql.ErrNoRows {
-		return lineage.Run{}, ErrNotFound
+		return lineage.Run{}, false, "", ErrNotFound
 	}
 	if err != nil {
-		return lineage.Run{}, err
+		return lineage.Run{}, false, "", err
 	}
 	r.Status = lineage.Status(status)
 	r.StartedAt = nsToTime(startedAtNS)
@@ -362,7 +424,31 @@ func scanRun(row *sql.Row) (lineage.Run, error) {
 		endedAt := nsToTime(endedAtNS.Int64)
 		r.EndedAt = &endedAt
 	}
-	return r, nil
+	return r, captureDeclared, captureClient, nil
+}
+
+// loadCaptureAttempted returns runID's capture.attempted list in a
+// canonical (lexical) order -- ORDER BY, not left to whatever order the
+// side table happens to scan in, for exactly the reason NormalizeCapture's
+// doc comment gives: this value is compared against a freshly-decoded,
+// NormalizeCapture-sorted Run during Record's idempotency check, and the
+// two orders must agree or a legitimate retry could misread as a conflict.
+func loadCaptureAttempted(ctx context.Context, q queryer, runID string) ([]string, error) {
+	rows, err := q.QueryContext(ctx,
+		`SELECT field FROM run_capture_attempted WHERE run_id = ? ORDER BY field`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var field string
+		if err := rows.Scan(&field); err != nil {
+			return nil, err
+		}
+		out = append(out, field)
+	}
+	return out, rows.Err()
 }
 
 func loadKV(ctx context.Context, q queryer, table, runID string) (map[string]string, error) {
@@ -422,6 +508,15 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	add("device", query.Device)
 	add("submitter_claim", query.SubmitterClaim)
 	add("job_id", query.JobID)
+	if query.CaptureClient != "" {
+		// Not add(): a run with no declaration at all stores
+		// capture_client = '' (the same default a legacy row backfills to),
+		// so a bare "capture_client = ?" predicate already excludes it
+		// correctly without needing a separate capture_declared check --
+		// an undeclared run can never equal a non-empty filter value.
+		where = append(where, "capture_client = ?")
+		args = append(args, query.CaptureClient)
+	}
 	if !query.Since.IsZero() {
 		where = append(where, "started_at_ns >= ?")
 		args = append(args, query.Since.UnixNano())
@@ -441,8 +536,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 	sqlStr := `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
 			model_version, seed, fingerprint, fingerprint_version, host, device,
-			framework_version, submitter_claim, job_id, status, started_at_ns,
-			ended_at_ns, checkpoint_uri
+			framework_version, submitter_claim, job_id, capture_declared,
+			capture_client, status, started_at_ns, ended_at_ns, checkpoint_uri
 		FROM runs`
 	if len(where) > 0 {
 		sqlStr += " WHERE " + strings.Join(where, " AND ")
@@ -469,10 +564,13 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		var status string
 		var startedAtNS int64
 		var endedAtNS sql.NullInt64
+		var captureDeclared bool
+		var captureClient string
 		if err := rows.Scan(
 			&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
 			&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
-			&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+			&r.FrameworkVersion, &r.SubmitterClaim, &r.JobID, &captureDeclared, &captureClient,
+			&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 		); err != nil {
 			rows.Close()
 			return Page{}, err
@@ -482,6 +580,12 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		if endedAtNS.Valid {
 			endedAt := nsToTime(endedAtNS.Int64)
 			r.EndedAt = &endedAt
+		}
+		if captureDeclared {
+			// Attempted is filled in below by hydrateCaptureAttempted, in one
+			// batched query for the whole page rather than one per run --
+			// the same reasoning hydrate (params/metrics) already follows.
+			r.Capture = &lineage.CaptureDeclaration{Client: captureClient}
 		}
 		runs = append(runs, r)
 		runIDs = append(runIDs, r.RunID)
@@ -500,10 +604,14 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		next = &Cursor{StartedAt: last.StartedAt, RunID: last.RunID}
 	}
 
-	// Hydrate params/metrics for the page in two batched queries rather than
-	// one round trip per run -- List answers "every run of this project",
-	// which is exactly the case with the most rows to hydrate.
+	// Hydrate params/metrics/capture.attempted for the page in batched
+	// queries rather than one round trip per run -- List answers "every run
+	// of this project", which is exactly the case with the most rows to
+	// hydrate.
 	if err := hydrate(ctx, d.db, runs, runIDs); err != nil {
+		return Page{}, err
+	}
+	if err := hydrateCaptureAttempted(ctx, d.db, runs, runIDs); err != nil {
 		return Page{}, err
 	}
 	return Page{Runs: runs, Next: next}, nil
@@ -570,6 +678,49 @@ func hydrate(ctx context.Context, q queryer, runs []lineage.Run, runIDs []string
 	}
 	mrows.Close()
 	return nil
+}
+
+// hydrateCaptureAttempted fills in Capture.Attempted for every run in the
+// page that has a capture declaration (Capture != nil, stamped by List's
+// row scan from capture_declared), the same batched-query shape hydrate
+// uses for params and metrics. ORDER BY field, for the reason
+// loadCaptureAttempted's doc comment gives: this must agree with
+// NormalizeCapture's canonical order.
+func hydrateCaptureAttempted(ctx context.Context, q queryer, runs []lineage.Run, runIDs []string) error {
+	if len(runIDs) == 0 {
+		return nil
+	}
+	byID := make(map[string]int, len(runs))
+	for i, r := range runs {
+		byID[r.RunID] = i
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(runIDs)), ",")
+	args := make([]any, len(runIDs))
+	for i, id := range runIDs {
+		args[i] = id
+	}
+
+	rows, err := q.QueryContext(ctx, fmt.Sprintf(
+		`SELECT run_id, field FROM run_capture_attempted WHERE run_id IN (%s) ORDER BY field`, placeholders), args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, field string
+		if err := rows.Scan(&id, &field); err != nil {
+			return err
+		}
+		i := byID[id]
+		if runs[i].Capture == nil {
+			// Defensive only: Record never writes a run_capture_attempted
+			// row without also setting capture_declared, so this should be
+			// unreachable against data this backend itself wrote.
+			continue
+		}
+		runs[i].Capture.Attempted = append(runs[i].Capture.Attempted, field)
+	}
+	return rows.Err()
 }
 
 func (d *DuckDB) Close() error {

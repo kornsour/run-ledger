@@ -557,6 +557,10 @@ var listQueryParams = map[string]bool{
 	// runs" workflow #67 exists for, consistent with the existing
 	// provenance filter (device) rather than a new mechanism.
 	"submitter_claim": true, "job_id": true,
+	// capture_client: "did capture regress in client X.Y" (ADR 0016) needs
+	// to isolate every run one client version recorded, the same exact-match
+	// shape device/submitter_claim/job_id already have.
+	"capture_client": true,
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -604,6 +608,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		Device:         q.Get("device"),
 		SubmitterClaim: q.Get("submitter_claim"),
 		JobID:          q.Get("job_id"),
+		CaptureClient:  q.Get("capture_client"),
 		Limit:          limit,
 		After:          after,
 		Since:          since,

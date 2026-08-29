@@ -20,16 +20,29 @@ import (
 // are hashed into the RunID; the fields below record *what happened* and are
 // not. Two runs with the same Fingerprint were the same experiment, whatever
 // their outcome — which is what makes "did this change anything?" answerable.
+//
+// Every field also carries a `lineage:"identity"` or `lineage:"provenance"`
+// struct tag agreeing with which side of that boundary it's on.
+// run_property_test.go's TestProperty_EveryRunFieldIsClassified reads these
+// tags (rather than a hand-maintained list duplicated in the test file) to
+// build the field sets its mutation properties exercise, and fails loudly if
+// a field is missing one or carries an unrecognized value. A tag can still
+// say something false -- nothing stops a future field from being tagged
+// "provenance" while Compute quietly hashes it anyway -- which is exactly
+// why the tag only supplies the field *names* under test; the properties
+// still call the real Compute and fail if a "provenance"-tagged field
+// actually moves the fingerprint. The tag removes the duplication, not the
+// need for that behavioral check.
 type Run struct {
 	// --- identity: hashed into Fingerprint ---
-	Project        string            `json:"project"`
-	GitCommit      string            `json:"git_commit"`
-	GitDirty       bool              `json:"git_dirty"`
-	ConfigHash     string            `json:"config_hash"`
-	DatasetVersion string            `json:"dataset_version"`
-	ModelVersion   string            `json:"model_version"`
-	Seed           int64             `json:"seed"`
-	Params         map[string]string `json:"params,omitempty"`
+	Project        string            `json:"project" lineage:"identity"`
+	GitCommit      string            `json:"git_commit" lineage:"identity"`
+	GitDirty       bool              `json:"git_dirty" lineage:"identity"`
+	ConfigHash     string            `json:"config_hash" lineage:"identity"`
+	DatasetVersion string            `json:"dataset_version" lineage:"identity"`
+	ModelVersion   string            `json:"model_version" lineage:"identity"`
+	Seed           int64             `json:"seed" lineage:"identity"`
+	Params         map[string]string `json:"params,omitempty" lineage:"identity"`
 
 	// --- provenance: recorded, not hashed ---
 	//
@@ -47,8 +60,16 @@ type Run struct {
 	// client serializes an unset key or omits it -- how a client spells
 	// things, rather than what the experimenter chose. Consumers may rely
 	// on "" == absent for these fields; compare.Runs already does.
-	RunID       string `json:"run_id"`
-	Fingerprint string `json:"fingerprint"`
+	//
+	// What ADR 0011 leaves unanswered is *why* a field is empty. A client
+	// that looked for a device and found none, and a client that never
+	// looks at all, both produce Device == "" -- indistinguishable from a
+	// single record, and no amount of widening Device's own type recovers
+	// the difference, because "did the client try" is a fact about the
+	// recording process, not a value the experiment can take. See Capture,
+	// below, and ADR 0016.
+	RunID       string `json:"run_id" lineage:"provenance"`
+	Fingerprint string `json:"fingerprint" lineage:"provenance"`
 	// FingerprintVersion records which version of Compute's hashing contract
 	// produced Fingerprint -- see ADR 0004 and ADR 0013. It is provenance
 	// about the fingerprint, not an input to it: hashing the version itself
@@ -64,10 +85,10 @@ type Run struct {
 	// every pre-existing row to FingerprintVersionLegacy explicitly, and any
 	// other caller constructing a Run by hand for a legacy value should do
 	// the same rather than leave the field at its zero value.
-	FingerprintVersion int    `json:"fingerprint_version"`
-	Host               string `json:"host"`
-	Device             string `json:"device"`
-	FrameworkVersion   string `json:"framework_version"`
+	FingerprintVersion int    `json:"fingerprint_version" lineage:"provenance"`
+	Host               string `json:"host" lineage:"provenance"`
+	Device             string `json:"device" lineage:"provenance"`
+	FrameworkVersion   string `json:"framework_version" lineage:"provenance"`
 	// SubmitterClaim names the human or service account the caller says
 	// recorded this run. The field is named "claim", not "submitter" or
 	// "user", on purpose: RUNLEDGER_TOKEN is one shared secret today (see
@@ -85,7 +106,7 @@ type Run struct {
 	// differently depending on who happened to launch it, which destroys the
 	// one property fingerprinting exists to give (same fingerprint means
 	// same experiment, full stop).
-	SubmitterClaim string `json:"submitter_claim"`
+	SubmitterClaim string `json:"submitter_claim" lineage:"provenance"`
 	// JobID is the identifier of the job or scheduler invocation that
 	// launched this run -- a CI job id, a Slurm job id, or whatever a
 	// launcher calls its own unit of work. Deliberately one generic field
@@ -96,16 +117,99 @@ type Run struct {
 	// are -- unlike SubmitterClaim it does not name a person, so it does not
 	// need the same "claim" framing in its name; forging it gains a caller
 	// nothing the way misattributing a run to someone else would.
-	JobID     string    `json:"job_id"`
-	Status    Status    `json:"status"`
-	StartedAt time.Time `json:"started_at"`
+	JobID     string    `json:"job_id" lineage:"provenance"`
+	Status    Status    `json:"status" lineage:"provenance"`
+	StartedAt time.Time `json:"started_at" lineage:"provenance"`
 	// EndedAt is a pointer because a struct's zero value is never omitted by
 	// encoding/json's "omitempty" -- without the pointer, every run that
 	// hasn't ended would serialize ended_at as 0001-01-01T00:00:00Z instead
 	// of leaving the field out.
-	EndedAt       *time.Time         `json:"ended_at,omitempty"`
-	CheckpointURI string             `json:"checkpoint_uri,omitempty"`
-	Metrics       map[string]float64 `json:"metrics,omitempty"`
+	EndedAt       *time.Time         `json:"ended_at,omitempty" lineage:"provenance"`
+	CheckpointURI string             `json:"checkpoint_uri,omitempty" lineage:"provenance"`
+	Metrics       map[string]float64 `json:"metrics,omitempty" lineage:"provenance"`
+	// Capture records what the client attempted to capture when it wrote
+	// this run, not what it captured -- see ADR 0016. nil means no client
+	// sent a declaration at all (every run recorded before this field
+	// existed, or a caller that simply doesn't populate it); non-nil means a
+	// client asserted (possibly empty) knowledge of its own capture
+	// behaviour.
+	//
+	// That nil-vs-non-nil distinction is deliberate, and is the reason this
+	// is the one field on Run that is a pointer: ADR 0011 rejected pointers
+	// for the seven scalar fields precisely because nothing there needed a
+	// third state beyond "recorded" and "not recorded" -- but
+	// examples/churn/completeness.py's peer-comparison heuristic needs to
+	// tell "no declaration at all, fall back to inferring from peers" apart
+	// from "declared, and declared nothing", and collapsing those two the
+	// way ADR 0011 collapses "" and absent would silently break that
+	// fallback for the runs it exists to cover (most of them, today). This
+	// does not reopen ADR 0011's objection: that objection was about the
+	// fingerprint contract -- a nullable identity field would make the
+	// fingerprint depend on how a client serializes an unset value rather
+	// than on what the experimenter chose. Capture is never hashed (see
+	// Compute below), so there is no fingerprint contract here to destabilize.
+	Capture *CaptureDeclaration `json:"capture,omitempty" lineage:"provenance"`
+}
+
+// CaptureDeclaration records which fields a client's recording code path
+// actively tried to determine for a run, regardless of whether the attempt
+// succeeded -- see ADR 0016. It answers a question no value field can hold
+// on its own: not "what did this run have", but "did this client know how
+// to look".
+type CaptureDeclaration struct {
+	// Client identifies the client library and version that produced this
+	// declaration (e.g. "runledger-py/0.1.0"), so "did capture regress in
+	// client X.Y" is answerable directly from stored runs rather than by
+	// cross-referencing anything else. Self-asserted the same way Host and
+	// Device already are -- forging it gains a caller nothing, the same
+	// reason JobID needs no special "claim" framing.
+	Client string `json:"client"`
+	// Attempted names which of CaptureFields this client's recording code
+	// tried to determine for this run. A field's absence from Attempted is
+	// itself the fact this type exists to carry: it means the client never
+	// looks for that field at all, as distinct from looking and finding
+	// nothing (an empty value on Run with the field named here). Validate
+	// rejects any name not in CaptureFields, the same way it rejects an
+	// unrecognized Status -- an unknown name here is a typo, not a new kind
+	// of fact.
+	Attempted []string `json:"attempted,omitempty"`
+}
+
+// CaptureFields are the fields ADR 0011 gives a single meaning to "" for --
+// the ones "did the client try?" is answerable about. CaptureDeclaration's
+// Attempted may name only fields from this list.
+var CaptureFields = []string{
+	"config_hash", "dataset_version", "model_version",
+	"host", "device", "framework_version", "checkpoint_uri",
+}
+
+var captureFieldSet = func() map[string]bool {
+	m := make(map[string]bool, len(CaptureFields))
+	for _, f := range CaptureFields {
+		m[f] = true
+	}
+	return m
+}()
+
+// NormalizeCapture sorts r.Capture.Attempted into a canonical (lexical)
+// order, if r carries a capture declaration. Attempted is conceptually a
+// set -- which fields the client tried, not in what order -- but a Store's
+// idempotent re-record check compares it as a concrete slice, and DuckDB
+// reads it back from a side table with no row order of its own. Without a
+// canonical order, a legitimate retry of a byte-identical request could
+// read back non-identically ordered and be refused as a conflict for a
+// reason that has nothing to do with what the client actually sent.
+//
+// Every Store.Record implementation calls this before comparing or
+// persisting (see internal/store). It is deliberately not folded into
+// Validate: Validate only reports whether a run can be trusted as lineage
+// and never mutates it, and giving it a side effect here would break that
+// for every existing caller that assumes Validate is a pure check.
+func (r *Run) NormalizeCapture() {
+	if r.Capture == nil || len(r.Capture.Attempted) < 2 {
+		return
+	}
+	sort.Strings(r.Capture.Attempted)
 }
 
 // Status is the lifecycle state of a run.
@@ -181,6 +285,13 @@ func (r *Run) Validate() error {
 	}
 	if r.EndedAt != nil && r.EndedAt.Before(r.StartedAt) {
 		return errors.New("ended_at precedes started_at")
+	}
+	if r.Capture != nil {
+		for _, f := range r.Capture.Attempted {
+			if !captureFieldSet[f] {
+				return fmt.Errorf("capture.attempted names unknown field %q", f)
+			}
+		}
 	}
 	return nil
 }

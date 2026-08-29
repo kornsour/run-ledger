@@ -202,6 +202,71 @@ func TestEmptyAttributionFieldsReportAsAbsent(t *testing.T) {
 	}
 }
 
+// TestCaptureDiffersFromNoDeclaration exercises the "did the client try"
+// half of ADR 0016: a run whose client declared it looked for device (and
+// found nothing) must compare as different from a run with no capture
+// declaration at all, even though both runs have Device == "".
+func TestCaptureDiffersFromNoDeclaration(t *testing.T) {
+	a, b := run("a"), run("b")
+	b.Capture = &lineage.CaptureDeclaration{Client: "runledger-py/0.1.0", Attempted: []string{"device", "host"}}
+
+	fields := Runs(a, b).Fields
+	var sawClient, sawAttempted bool
+	for _, f := range fields {
+		switch f.Name {
+		case "capture.client":
+			sawClient = true
+			if f.A != nil || f.B == nil || *f.B != "runledger-py/0.1.0" {
+				t.Errorf("capture.client: got a=%v b=%v, want a=nil b=%q", f.A, f.B, "runledger-py/0.1.0")
+			}
+		case "capture.attempted":
+			sawAttempted = true
+			if f.A != nil || f.B == nil || *f.B != "device,host" {
+				t.Errorf("capture.attempted: got a=%v b=%v, want a=nil b=%q (sorted)", f.A, f.B, "device,host")
+			}
+		}
+	}
+	if !sawClient || !sawAttempted {
+		t.Fatalf("want both capture.client and capture.attempted reported as differences, got %+v", fields)
+	}
+	if Runs(a, b).SameExperiment != true {
+		t.Fatal("a capture declaration must never affect same_experiment -- it is provenance, not identity")
+	}
+}
+
+// TestCaptureAttemptedOrderDoesNotProduceASpuriousDiff pins that Attempted
+// is compared as a set, not a sequence: two declarations naming the same
+// fields in different orders describe the same recording behaviour and
+// must not show up as a difference.
+func TestCaptureAttemptedOrderDoesNotProduceASpuriousDiff(t *testing.T) {
+	a, b := run("a"), run("b")
+	a.Capture = &lineage.CaptureDeclaration{Client: "c/1", Attempted: []string{"host", "device", "framework_version"}}
+	b.Capture = &lineage.CaptureDeclaration{Client: "c/1", Attempted: []string{"framework_version", "device", "host"}}
+
+	for _, f := range Runs(a, b).Fields {
+		if f.Name == "capture.attempted" || f.Name == "capture.client" {
+			t.Fatalf("want no diff for reordered-but-identical capture declarations, got %+v", f)
+		}
+	}
+}
+
+// TestCaptureDeclaredEmptyIsIndistinguishableFromNoDeclarationInADiff pins a
+// deliberate choice: a diff has no use for "no declaration" versus
+// "declared, and declared nothing" -- both mean the same thing to a reader
+// comparing two runs. That distinction exists only for
+// examples/churn/completeness.py's fallback logic (ADR 0016), which reads
+// the raw API response, not compare.Runs's diff.
+func TestCaptureDeclaredEmptyIsIndistinguishableFromNoDeclarationInADiff(t *testing.T) {
+	a, b := run("a"), run("b")
+	b.Capture = &lineage.CaptureDeclaration{} // declared, with an empty client and no attempted fields
+
+	for _, f := range Runs(a, b).Fields {
+		if f.Name == "capture.attempted" || f.Name == "capture.client" {
+			t.Fatalf("want no diff between no declaration and an empty declaration, got %+v", f)
+		}
+	}
+}
+
 // compare must not answer "same experiment" independently of the stored
 // fingerprint the rest of the ledger groups by. Recomputing here gave a
 // second answer to the same question, which stays invisible only while

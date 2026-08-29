@@ -25,6 +25,16 @@ import (
 // bump is one edit here, not one per call site below.
 const apiVersion = "/v1"
 
+// clientVersion is rlctl's own version, reported in every recorded run's
+// capture.client (ADR 0016) as "rlctl/<clientVersion>" -- the same
+// "name/version" shape the Python client's __version__ already produces.
+// There is no build-time version stamping elsewhere in this repo to read
+// instead, so this is the one place it is spelled out; bump it alongside
+// python/runledger's __version__ when the two should stay in step, but
+// nothing enforces that they must -- rlctl and the Python client are
+// versioned and released independently.
+const clientVersion = "0.1.0"
+
 const usage = `rlctl — record and compare experiment runs
 
   rlctl record --project P [--seed N] [--dataset V] [--model V] [--param k=v ...] [--metric k=v ...]
@@ -32,13 +42,15 @@ const usage = `rlctl — record and compare experiment runs
                            Capture git context from the working tree and record a run.
                            --submitter-claim is self-asserted, not verified (see ADR 0015).
                            --job-id defaults from $SLURM_JOB_ID/$CI_JOB_ID/$GITHUB_RUN_ID if set.
+                           Every run records a capture declaration (ADR 0016): which
+                           fields rlctl itself attempts to auto-detect (today, only host).
   rlctl start  <run-id>    Mark a recorded run running.
   rlctl finish [--status succeeded|failed|cancelled] [--metric k=v ...] [--checkpoint URI] <run-id>
                            Move a running run to a terminal status. --status defaults to succeeded.
   rlctl fail   [--metric k=v ...] <run-id>
                            Shorthand for finish --status failed.
   rlctl list   [--project P] [--commit SHA] [--status S] [--submitter-claim WHO] [--job-id ID]
-               [--limit N] [--cursor C]
+               [--capture-client C] [--limit N] [--cursor C]
                            Server caps --limit; pass the printed "next cursor"
                            back as --cursor to fetch the following page.
   rlctl show   <run-id>
@@ -140,6 +152,20 @@ func cmdRecord(args []string) error {
 		Seed: *seed, Device: *device, Status: lineage.Status(*status),
 		SubmitterClaim: *submitterClaim, JobID: *jobID,
 		StartedAt: time.Now().UTC(),
+		// rlctl attempts exactly one field on its own: host, via
+		// os.Hostname() just below, unconditionally. Every other capturable
+		// field (config_hash, dataset_version, model_version, device,
+		// framework_version, checkpoint_uri) is a plain pass-through of
+		// whatever flag value a caller typed -- rlctl never inspects the
+		// environment to fill one in, so declaring them "attempted" would
+		// overstate what this client actually does. "host" belongs in
+		// Attempted regardless of whether os.Hostname() below succeeds:
+		// attempted records that the client's code tried, not that it
+		// found something -- see ADR 0016.
+		Capture: &lineage.CaptureDeclaration{
+			Client:    "rlctl/" + clientVersion,
+			Attempted: []string{"host"},
+		},
 	}
 	if host, err := os.Hostname(); err == nil {
 		run.Host = host
@@ -261,6 +287,7 @@ func cmdList(args []string) error {
 	status := fs.String("status", "", "filter by status")
 	submitterClaim := fs.String("submitter-claim", "", "filter by submitter_claim (self-asserted; see ADR 0015)")
 	jobID := fs.String("job-id", "", "filter by job_id")
+	captureClient := fs.String("capture-client", "", "filter by capture.client, e.g. runledger-py/0.1.0 (see ADR 0016)")
 	limit := fs.Int("limit", 20, "maximum rows (server-capped; see --help)")
 	cursor := fs.String("cursor", "", "opaque page cursor from a previous list's \"next cursor\" line")
 	_ = fs.Parse(args)
@@ -271,6 +298,7 @@ func cmdList(args []string) error {
 	set(q, "status", *status)
 	set(q, "submitter_claim", *submitterClaim)
 	set(q, "job_id", *jobID)
+	set(q, "capture_client", *captureClient)
 	set(q, "cursor", *cursor)
 	q.Set("limit", fmt.Sprint(*limit))
 

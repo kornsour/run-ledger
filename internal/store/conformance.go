@@ -151,6 +151,130 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("a capture declaration round-trips through Record/Get, and a run with none stays nil", func(t *testing.T) {
+		s := newStore(t)
+		declared := mk("a", "p", time.Now())
+		declared.Capture = &lineage.CaptureDeclaration{
+			Client:    "runledger-py/0.1.0",
+			Attempted: []string{"host", "device", "framework_version"},
+		}
+		declared.Fingerprint = declared.Compute()
+		if err := s.Record(ctx, declared); err != nil {
+			t.Fatal(err)
+		}
+		undeclared := mk("b", "p", time.Now())
+		if err := s.Record(ctx, undeclared); err != nil {
+			t.Fatal(err)
+		}
+
+		got, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Capture == nil || got.Capture.Client != "runledger-py/0.1.0" {
+			t.Fatalf("capture declaration did not round-trip: %+v", got.Capture)
+		}
+		wantAttempted := []string{"device", "framework_version", "host"} // canonical order
+		if len(got.Capture.Attempted) != len(wantAttempted) {
+			t.Fatalf("want attempted %v, got %v", wantAttempted, got.Capture.Attempted)
+		}
+		for i := range wantAttempted {
+			if got.Capture.Attempted[i] != wantAttempted[i] {
+				t.Fatalf("want attempted %v, got %v", wantAttempted, got.Capture.Attempted)
+			}
+		}
+
+		gotUndeclared, err := s.Get(ctx, "b")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if gotUndeclared.Capture != nil {
+			t.Fatalf("a run whose client sent no capture declaration must read back with Capture == nil, got %+v", gotUndeclared.Capture)
+		}
+
+		// The same distinction must survive List, not just Get -- List
+		// hydrates capture.attempted through a separate batched query
+		// (DuckDB), which is exactly the kind of thing that can silently
+		// diverge from Get's own path if only one of the two is exercised.
+		page, err := s.List(ctx, Query{Project: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		byID := map[string]lineage.Run{}
+		for _, r := range page.Runs {
+			byID[r.RunID] = r
+		}
+		if byID["a"].Capture == nil || len(byID["a"].Capture.Attempted) != 3 {
+			t.Fatalf("List did not hydrate capture.attempted for %q: %+v", "a", byID["a"].Capture)
+		}
+		if byID["b"].Capture != nil {
+			t.Fatalf("List must not manufacture a capture declaration for %q, got %+v", "b", byID["b"].Capture)
+		}
+	})
+
+	t.Run("capture_client filters the listing", func(t *testing.T) {
+		s := newStore(t)
+		now := time.Now()
+		a := mk("a", "p", now)
+		a.Capture = &lineage.CaptureDeclaration{Client: "runledger-py/0.1.0", Attempted: []string{"host"}}
+		a.Fingerprint = a.Compute()
+		b := mk("b", "p", now.Add(-time.Minute))
+		b.Capture = &lineage.CaptureDeclaration{Client: "rlctl/0.1.0", Attempted: []string{"host"}}
+		b.Fingerprint = b.Compute()
+		if err := s.Record(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Record(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		page, err := s.List(ctx, Query{Project: "p", CaptureClient: "runledger-py/0.1.0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "a" {
+			t.Fatalf("capture_client filter did not narrow: %+v", page.Runs)
+		}
+	})
+
+	t.Run("re-recording a run with an equivalent, differently-ordered capture declaration is idempotent", func(t *testing.T) {
+		// Attempted is a set; a client library retrying a request has no
+		// reason to reorder it, but nothing about the type guarantees that,
+		// and a backend's own storage (a side table, in DuckDB's case) has
+		// no order of its own to begin with. This is the property
+		// NormalizeCapture exists to guarantee.
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Capture = &lineage.CaptureDeclaration{Attempted: []string{"host", "device", "framework_version"}}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		reordered := r
+		reordered.Capture = &lineage.CaptureDeclaration{Attempted: []string{"framework_version", "device", "host"}}
+		if err := s.Record(ctx, reordered); err != nil {
+			t.Fatalf("re-recording with a reordered-but-equivalent capture declaration should be idempotent, got %v", err)
+		}
+	})
+
+	t.Run("update does not disturb a run's capture declaration", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Capture = &lineage.CaptureDeclaration{Client: "runledger-py/0.1.0", Attempted: []string{"host"}}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		got, err := s.Update(ctx, "a", Patch{Status: &succeeded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Capture == nil || got.Capture.Client != "runledger-py/0.1.0" {
+			t.Fatalf("an unrelated patch must not disturb the run's capture declaration, got %+v", got.Capture)
+		}
+	})
+
 	t.Run("concurrent identical Record calls are idempotent", func(t *testing.T) {
 		s := newStore(t)
 		r := mk("a", "p", time.Now())

@@ -2,8 +2,8 @@
 
 The ledger's one claim is "same fingerprint + different metrics = something
 real is going unrecorded." It deliberately does not say what. But there is a
-cheap signal it can offer about *where to look first*, and it needs no
-schema change and no new field: compare a run against its peers.
+cheap signal it can offer about *where to look first*: compare a run against
+its peers.
 
 The reasoning
 -------------
@@ -16,9 +16,27 @@ What stays unanswerable from a single record is *why*: whether this run
 genuinely had no dataset version, or the client that submitted it failed
 to send one. That is a fact about the recording process rather than about
 the experiment, and no amount of widening the field's type would recover
-it.
+it -- which is why this module used to stop here and infer the answer
+statistically instead.
 
-Across a *project*, though, it is recoverable statistically. If 11 of 12
+ADR 0016 closes that gap directly: a run's `capture` field, when present,
+names exactly which fields its client attempted to determine. For a run
+that carries one, this module no longer has to guess -- an empty field the
+client says it attempted is a real fact about the environment (it looked
+and found nothing), and a field absent from `attempted` is a real fact
+about the pipeline (this client never looks), neither of which is evidence
+of a bad launch. Such a run is excluded from `odd_ones_out` entirely: the
+peer heuristic exists to approximate a signal that a capture declaration
+now states outright, and inference has nothing to add once the fact is
+already known. `declared_blind_spots` reports the ground-truth counterpart
+of the pipeline-level signal below.
+
+Most runs recorded before ADR 0016 -- and any client that still doesn't
+send a declaration -- carry no `capture` field at all. For exactly those
+runs, the statistical approximation below is still what this module has,
+and it works the same way it always did:
+
+Across a *project*, missing-ness is recoverable statistically. If 11 of 12
 runs in a project record `framework_version` and one does not, the odds that
 the twelfth run genuinely had no framework are poor. The peer group supplies
 the prior that the individual record lacks.
@@ -65,6 +83,30 @@ ODD_ONE_OUT_SHARE = 0.6
 MIN_PEERS = 3
 
 
+def _declares_capture(run: Dict[str, Any]) -> bool:
+    """Whether run carries a capture declaration at all (ADR 0016).
+
+    The server omits the `capture` key entirely for a run whose client
+    never sent one -- absent means "no declaration", not "declared with
+    nothing in it" -- so a plain truthiness check already distinguishes
+    the two the same way the wire representation does.
+    """
+    return bool(run.get("capture"))
+
+
+def _attempted(run: Dict[str, Any]) -> "set[str]":
+    """The set of fields run's capture declaration says its client tried.
+
+    Only meaningful when `_declares_capture(run)` is true. For a run with
+    no declaration this also returns an empty set -- the same shape a
+    declared-but-attempts-nothing client would produce -- so callers must
+    check `_declares_capture` first if the distinction matters to them
+    (`odd_ones_out` and `declared_blind_spots` both do).
+    """
+    capture = run.get("capture") or {}
+    return set(capture.get("attempted") or [])
+
+
 def coverage(runs: Sequence[Dict[str, Any]]) -> Dict[str, float]:
     """Share of runs recording a non-empty value, per capturable field."""
     if not runs:
@@ -77,10 +119,24 @@ def coverage(runs: Sequence[Dict[str, Any]]) -> Dict[str, float]:
 
 
 def odd_ones_out(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Runs missing a field their peers overwhelmingly record."""
+    """Runs missing a field their peers overwhelmingly record.
+
+    A run that carries a capture declaration (ADR 0016) is never a
+    candidate here, whatever it's missing: the whole point of the peer
+    heuristic is approximating an answer this module can't otherwise get,
+    and a declared run already states the answer outright. Flagging it
+    anyway would report an inferred, lower-confidence guess ("probably a
+    bad launch") over a known fact ("this client never looks for X", or
+    "it looked and genuinely found nothing") -- strictly a worse claim,
+    not merely a redundant one. Peer coverage (`cov`, above) still counts
+    every run, declared or not, when judging *other* runs: a declared
+    run's recorded values are real data about the project either way.
+    """
     cov = coverage(runs)
     findings = []
     for run in runs:
+        if _declares_capture(run):
+            continue
         missing = []
         for field, kind in CAPTURABLE:
             share = cov.get(field, 0.0)
@@ -105,6 +161,33 @@ def blind_spots(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
     cov = coverage(runs)
     return [
         {"field": f, "kind": k} for f, k in CAPTURABLE if cov.get(f, 0.0) == 0.0
+    ]
+
+
+def declared_blind_spots(runs: Sequence[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Fields that every capture-declaring run in the project says its
+    client never attempts (ADR 0016) -- the ground-truth counterpart to
+    `blind_spots`.
+
+    `blind_spots` can only ever *infer* "nobody records this" from
+    presence, which cannot tell "no run happened to need it" apart from
+    "the client never looks" -- that ambiguity is the entire reason ADR
+    0016 exists. A run with a capture declaration removes it directly:
+    `field not in attempted` is a fact about that run's client, not a
+    guess. This checks it across every declared run in the project rather
+    than trusting a single one, the same "don't act on one data point"
+    caution `ODD_ONE_OUT_SHARE`/`MIN_PEERS` apply to the inferred signal.
+
+    Returns `[]` when no run in the project declares capture -- there is
+    nothing to conclude without at least one.
+    """
+    declared = [r for r in runs if _declares_capture(r)]
+    if not declared:
+        return []
+    return [
+        {"field": f, "kind": k}
+        for f, k in CAPTURABLE
+        if all(f not in _attempted(r) for r in declared)
     ]
 
 
@@ -196,4 +279,14 @@ def report(runs: Sequence[Dict[str, Any]]) -> str:
         lines.append("  -> no unexplained spread in this project, so nothing to chase.")
     else:
         lines.append("no blind spots: every capturable field is recorded somewhere")
+
+    known = declared_blind_spots(runs)
+    if known:
+        names = ", ".join(s["field"] for s in known)
+        lines.append("")
+        lines.append(f"known blind spots (client says it never attempts): {names}")
+        lines.append(
+            "  -> not a guess: every run that declared what it attempts (ADR 0016)\n"
+            "     agrees it doesn't try these. Update the client, not the launch."
+        )
     return "\n".join(lines)

@@ -429,6 +429,19 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   that it is a claim, not a verified fact, until named per-caller tokens
   exist.
   ([ADR 0015](docs/adr/0015-run-attribution-is-provenance-self-asserted.md))
+- **A capture declaration (`capture.client`, `capture.attempted`) records what
+  the client tried to capture, not just what it captured, and is never
+  hashed.** `device: ""` can mean "this run has no device" or "this client
+  never looks" -- a single value field can't say which, so `attempted`
+  answers the question the value field can't: was `device` even named in it?
+  `Capture` is the one pointer field on `Run`, on purpose -- unlike ADR
+  0011's fields, "no declaration at all" and "declared, and declared
+  nothing" are different, useful claims, and
+  `examples/churn/completeness.py`'s peer-comparison fallback depends on
+  telling them apart. Not patchable: a client already knows what it
+  attempted in full at record time, so there is no "fill this in later"
+  case the way there is for `host`/`device`/`job_id`.
+  ([ADR 0016](docs/adr/0016-record-what-the-client-attempted-to-capture.md))
 
 ## Status
 

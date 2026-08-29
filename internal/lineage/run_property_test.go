@@ -47,58 +47,68 @@ func newPropertyRand(t *testing.T) *rand.Rand {
 //
 // Three ways to express the boundary were considered:
 //
-//  1. A struct tag on each field (e.g. `lineage:"identity"`). This would be
-//     the most machine-checkable option, but it requires editing run.go,
-//     which this task is explicitly scoped not to touch -- and even if it
-//     weren't, a tag is just as capable of drifting from what Compute
-//     actually hashes as anything else here: nothing stops someone from
-//     adding a field, tagging it "provenance", and also (by mistake) adding
-//     it to Compute's write() call. A tag only moves the hand-maintained
-//     source of truth from a test file to the struct; it doesn't remove the
-//     need for one.
+//  1. A struct tag on each field (e.g. `lineage:"identity"`). The most
+//     machine-checkable option -- but a tag is just as capable of drifting
+//     from what Compute actually hashes as anything else here: nothing
+//     stops someone from adding a field, tagging it "provenance", and also
+//     (by mistake) adding it to Compute's write() call. A tag only moves
+//     the hand-maintained source of truth from a test file to the struct;
+//     it doesn't remove the need for a behavioral check.
 //  2. Parsing the "--- identity ---" / "--- provenance ---" boundary
 //     comment out of run.go via go/ast. This sounds the most "automatic",
 //     but a comment is not a language-level contract: nothing stops it from
 //     drifting out of sync with the fields around it after a refactor, a
 //     parser has to make an editorial judgment call about which comment
-//     line is "the" boundary, and the payoff over option 3 is small since
+//     line is "the" boundary, and the payoff over option 1 is small since
 //     both still require a human to keep two things in agreement.
-//  3. Two explicit field-name whitelists in this test file, one mirroring
-//     exactly what Compute's write() call and Params loop hash
-//     (identityFieldNames) and one covering everything else
-//     (provenanceFieldNames) -- with a separate test
-//     (TestProperty_EveryRunFieldIsClassified) asserting every field on
-//     Run appears in exactly one of the two, and failing loudly if a field
-//     appears in neither.
+//  3. Two explicit field-name whitelists duplicated in this test file, with
+//     a separate test (TestProperty_EveryRunFieldIsClassified) asserting
+//     every field on Run appears in exactly one of them.
 //
-// Option 3 is what's implemented below, because it's the only one of the
-// three whose failure mode actually matches the goal. Consider the case
-// this exists to catch: someone adds a new field to Run, hashes it inside
-// Compute, but forgets to touch this test file. identityFieldNames doesn't
-// contain the new field's name, so TestProperty_EveryRunFieldIsClassified
-// fails immediately and loudly ("unclassified field") -- it can't be
-// silently treated as provenance, because the classification test runs
-// before either mutation test does. Now suppose instead they add it to
-// provenanceFieldNames by mistake, believing it's not hashed, when in fact
-// it is: TestProperty_MutatingAProvenanceFieldLeavesFingerprintUnchanged
-// mutates it, calls the *real* Compute, and fails because the fingerprint
-// actually changed. Either mistake is caught by exercising real behavior,
-// not by the whitelist agreeing with itself -- a struct tag or a parsed
-// comment would only have prevented the first mistake, not the second,
-// since both of those approaches would have happily believed whatever the
-// human wrote down.
+// This file used to implement option 3, because an earlier version of this
+// task was scoped not to touch run.go and so couldn't use option 1 at all.
+// That constraint no longer holds, and option 3's duplication was never the
+// point -- it was the fallback once the run.go edit wasn't available. Now
+// that it is, option 1 is strictly better: identityFieldNames and
+// provenanceFieldNames below are derived by reading each field's
+// `lineage:"identity"|"provenance"` struct tag via reflection, so run.go
+// stays the one place a human writes "this field is identity" down. The
+// tag can still say something false -- nothing about a tag stops a field
+// from being marked "provenance" while Compute quietly hashes it anyway --
+// which is why TestProperty_EveryRunFieldIsClassified remains the
+// loud-failure backstop below, and why the two mutation tests still call
+// the *real* Compute rather than trusting the tag: a field mistagged
+// "provenance" that Compute actually hashes is caught by
+// TestProperty_MutatingAProvenanceFieldLeavesFingerprintUnchanged mutating
+// it, calling Compute, and failing because the fingerprint moved. A struct
+// tag only prevents the *other* mistake (a field with no tag at all,
+// silently falling through); it cannot prevent a tag that lies, and this
+// file's mutation tests are what catches that one.
 
-var identityFieldNames = map[string]bool{
-	"Project": true, "GitCommit": true, "GitDirty": true, "ConfigHash": true,
-	"DatasetVersion": true, "ModelVersion": true, "Seed": true, "Params": true,
+// classifyRunFields reads every field's `lineage` struct tag off
+// lineage.Run and partitions field names into the two sets below. A field
+// with a missing or unrecognized tag value lands in neither set --
+// TestProperty_EveryRunFieldIsClassified is what turns that into a loud
+// failure instead of a silently-untested field.
+func classifyRunFields() (identity, provenance map[string]bool) {
+	identity, provenance = map[string]bool{}, map[string]bool{}
+	typ := reflect.TypeOf(Run{})
+	for i := 0; i < typ.NumField(); i++ {
+		f := typ.Field(i)
+		switch f.Tag.Get("lineage") {
+		case "identity":
+			identity[f.Name] = true
+		case "provenance":
+			provenance[f.Name] = true
+			// default (including ""): left unclassified on purpose --
+			// TestProperty_EveryRunFieldIsClassified is the only place that
+			// gets to decide what happens to an unclassified field.
+		}
+	}
+	return identity, provenance
 }
 
-var provenanceFieldNames = map[string]bool{
-	"RunID": true, "Fingerprint": true, "FingerprintVersion": true,
-	"Host": true, "Device": true, "FrameworkVersion": true,
-	"SubmitterClaim": true, "JobID": true, "Status": true,
-	"StartedAt": true, "EndedAt": true, "CheckpointURI": true, "Metrics": true,
-}
+var identityFieldNames, provenanceFieldNames = classifyRunFields()
 
 // TestProperty_EveryRunFieldIsClassified is the loud-failure backstop
 // described above: it must run (and be seen) before either mutation test
@@ -113,12 +123,12 @@ func TestProperty_EveryRunFieldIsClassified(t *testing.T) {
 		inProvenance := provenanceFieldNames[name]
 		switch {
 		case inIdentity && inProvenance:
-			t.Fatalf("field %q is listed in both identityFieldNames and provenanceFieldNames in run_property_test.go", name)
+			t.Fatalf("field %q is tagged as both identity and provenance -- impossible given classifyRunFields' switch, so this indicates a bug in classifyRunFields itself", name)
 		case !inIdentity && !inProvenance:
-			t.Fatalf("field %q on lineage.Run is not classified in run_property_test.go -- "+
-				"decide, from run.go's identity/provenance boundary comment and Compute's write() call, "+
-				"whether it is hashed into Fingerprint, and add it to identityFieldNames or "+
-				"provenanceFieldNames; an unclassified field must never be silently treated as provenance", name)
+			t.Fatalf("field %q on lineage.Run has no (or an unrecognized) `lineage:\"...\"` struct tag in run.go -- "+
+				"decide, from Compute's write() call, whether it is hashed into Fingerprint, and tag it "+
+				"`lineage:\"identity\"` or `lineage:\"provenance\"` there; an unclassified field must never be "+
+				"silently treated as provenance", name)
 		}
 	}
 }
@@ -220,16 +230,37 @@ func mutateField(t *testing.T, name string, v reflect.Value, rng *rand.Rand) ref
 		cur := v.Interface().(time.Time)
 		return reflect.ValueOf(cur.Add(time.Duration(1+rng.IntN(10000)) * time.Second))
 	case reflect.Ptr:
-		if v.Type() != reflect.TypeOf((*time.Time)(nil)) {
+		switch v.Type() {
+		case reflect.TypeOf((*time.Time)(nil)):
+			if v.IsNil() {
+				nt := time.Now().Add(time.Duration(rng.IntN(10000)) * time.Second)
+				return reflect.ValueOf(&nt)
+			}
+			cur := v.Interface().(*time.Time)
+			nt := cur.Add(time.Duration(1+rng.IntN(10000)) * time.Second)
+			return reflect.ValueOf(&nt)
+		case reflect.TypeOf((*CaptureDeclaration)(nil)):
+			// A nil Capture (no declaration at all) always differs from a
+			// non-nil one, so the nil case just needs *some* value; the
+			// non-nil case mutates Client, which is enough to guarantee
+			// inequality without needing to reason about Attempted's
+			// contents (CaptureFields' order doesn't matter to this test --
+			// only that the fingerprint doesn't move).
+			if v.IsNil() {
+				return reflect.ValueOf(&CaptureDeclaration{
+					Client:    "client-" + randString(rng, 6),
+					Attempted: []string{CaptureFields[rng.IntN(len(CaptureFields))]},
+				})
+			}
+			cur := v.Interface().(*CaptureDeclaration)
+			mutated := &CaptureDeclaration{
+				Client:    cur.Client + "-mut-" + randString(rng, 6),
+				Attempted: append([]string(nil), cur.Attempted...),
+			}
+			return reflect.ValueOf(mutated)
+		default:
 			t.Fatalf("mutateField: field %q is an unsupported pointer type %v -- extend run_property_test.go's mutator before this field can be classified", name, v.Type())
 		}
-		if v.IsNil() {
-			nt := time.Now().Add(time.Duration(rng.IntN(10000)) * time.Second)
-			return reflect.ValueOf(&nt)
-		}
-		cur := v.Interface().(*time.Time)
-		nt := cur.Add(time.Duration(1+rng.IntN(10000)) * time.Second)
-		return reflect.ValueOf(&nt)
 	default:
 		t.Fatalf("mutateField: field %q has kind %v, which run_property_test.go's mutator does not yet handle -- "+
 			"a field this test cannot mutate is a field it cannot prove is correctly classified as identity or "+
@@ -348,6 +379,12 @@ func cloneRun(r Run) Run {
 	if r.EndedAt != nil {
 		et := *r.EndedAt
 		c.EndedAt = &et
+	}
+	if r.Capture != nil {
+		c.Capture = &CaptureDeclaration{
+			Client:    r.Capture.Client,
+			Attempted: append([]string(nil), r.Capture.Attempted...),
+		}
 	}
 	return c
 }

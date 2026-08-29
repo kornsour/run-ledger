@@ -81,6 +81,92 @@ class BlindSpots(unittest.TestCase):
         self.assertIn("BLIND SPOTS, AND THEY MATTER HERE", completeness.report(noisy))
 
 
+class CaptureAware(unittest.TestCase):
+    """ADR 0016: a run that declares what it attempted no longer needs the
+    peer heuristic to guess about it -- these pin that a declared run is
+    never flagged by odd_ones_out, whatever it's missing, and that
+    declared_blind_spots reports the ground-truth version of the
+    pipeline-level signal.
+    """
+
+    def test_declared_run_missing_an_attempted_field_is_not_odd_one_out(self):
+        # The client looked for dataset_version and genuinely found
+        # nothing -- a real fact about the environment, not a bad launch,
+        # even though every peer records it.
+        peers = [run(f"r{i}") for i in range(5)]
+        declared = run(
+            "declared",
+            dataset_version="",
+            capture={"client": "c/1", "attempted": ["dataset_version"]},
+        )
+        self.assertEqual(completeness.odd_ones_out(peers + [declared]), [])
+
+    def test_declared_run_missing_an_unattempted_field_is_not_odd_one_out(self):
+        # The client never even looks for dataset_version -- a known
+        # blind spot for this run's pipeline, not an outlier launch.
+        peers = [run(f"r{i}") for i in range(5)]
+        declared = run(
+            "declared",
+            dataset_version="",
+            capture={"client": "c/1", "attempted": ["host", "device"]},
+        )
+        self.assertEqual(completeness.odd_ones_out(peers + [declared]), [])
+
+    def test_undeclared_runs_are_still_flagged_normally(self):
+        # The peer heuristic must keep working unchanged for the runs it
+        # exists for -- most existing runs have no capture declaration.
+        runs = [run(f"r{i}") for i in range(5)] + [run("odd", dataset_version="")]
+        [finding] = completeness.odd_ones_out(runs)
+        self.assertEqual(finding["run_id"], "odd")
+
+    def test_declared_blind_spots_needs_every_declared_run_to_agree(self):
+        # attempted lists only the fields each run's client actually tried;
+        # every field this fixture doesn't explicitly attempt is set to ""
+        # too, so a run's attempted list and its values agree the way a
+        # real client's would (declaring a field "attempted" is unrelated
+        # to whether a *different*, pass-through-supplied field happens to
+        # carry a value -- see rlctl, whose --device flag can be set even
+        # though rlctl itself never "attempts" device detection).
+        all_but_framework = ["config_hash", "dataset_version", "model_version", "host", "device"]
+        declared_never = run(
+            "a", framework_version="", capture={"client": "c/1", "attempted": all_but_framework}
+        )
+        declared_also_never = run(
+            "b", framework_version="", capture={"client": "c/2", "attempted": all_but_framework}
+        )
+        self.assertEqual(
+            [s["field"] for s in completeness.declared_blind_spots([declared_never, declared_also_never])],
+            ["framework_version"],
+        )
+
+    def test_declared_blind_spots_is_not_fooled_by_one_declared_run_that_tries(self):
+        all_fields = ["config_hash", "dataset_version", "model_version", "host", "device", "framework_version"]
+        never_tries = run(
+            "a",
+            framework_version="",
+            capture={"client": "c/1", "attempted": [f for f in all_fields if f != "framework_version"]},
+        )
+        does_try = run(
+            "b",
+            framework_version="torch 2.5",
+            capture={"client": "c/2", "attempted": all_fields},
+        )
+        self.assertEqual(completeness.declared_blind_spots([never_tries, does_try]), [])
+
+    def test_declared_blind_spots_empty_with_no_declarations_at_all(self):
+        runs = [run(f"r{i}", framework_version="") for i in range(4)]
+        self.assertEqual(completeness.declared_blind_spots(runs), [])
+
+    def test_report_surfaces_known_blind_spots_distinctly(self):
+        runs = [
+            run(f"r{i}", framework_version="", capture={"client": "c/1", "attempted": ["host"]})
+            for i in range(3)
+        ]
+        text = completeness.report(runs)
+        self.assertIn("known blind spots", text)
+        self.assertIn("framework_version", text.split("known blind spots")[1])
+
+
 class UnattributableGroups(unittest.TestCase):
     def test_identical_metrics_are_not_spread(self):
         runs = [run(f"r{i}", metrics={"auc": 0.8}) for i in range(4)]

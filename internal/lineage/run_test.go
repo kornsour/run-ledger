@@ -54,6 +54,71 @@ func TestFingerprintIgnoresAttribution(t *testing.T) {
 	}
 }
 
+// TestFingerprintIgnoresCapture pins the property ADR 0016 exists to
+// guarantee, alongside the generated coverage in
+// TestProperty_MutatingAProvenanceFieldLeavesFingerprintUnchanged: a capture
+// declaration describes the recording process, not the experiment, so a run
+// with one and an otherwise-identical run with none (or a different one)
+// must fingerprint identically.
+func TestFingerprintIgnoresCapture(t *testing.T) {
+	a, b := base(), base()
+	b.Capture = &CaptureDeclaration{
+		Client:    "runledger-py/0.1.0",
+		Attempted: []string{"host", "device", "framework_version"},
+	}
+	if a.Compute() != b.Compute() {
+		t.Fatal("adding a capture declaration changed the fingerprint; capture describes how the run was recorded, not what experiment it was")
+	}
+}
+
+func TestValidateRejectsUnknownCaptureField(t *testing.T) {
+	r := base()
+	r.Capture = &CaptureDeclaration{Client: "test/1", Attempted: []string{"device", "gpu_temperature"}}
+	if err := r.Validate(); err == nil {
+		t.Fatal("a capture declaration naming a field outside CaptureFields was accepted")
+	}
+}
+
+func TestValidateAcceptsEveryCaptureField(t *testing.T) {
+	r := base()
+	r.Capture = &CaptureDeclaration{Client: "test/1", Attempted: append([]string(nil), CaptureFields...)}
+	if err := r.Validate(); err != nil {
+		t.Fatalf("every name in CaptureFields should be a valid capture.attempted entry, got %v", err)
+	}
+}
+
+// TestNormalizeCaptureSortsAttempted pins the reason NormalizeCapture
+// exists: Attempted is a set, but a Store compares it as a concrete slice
+// (an idempotent re-record check, and DuckDB's own side-table round trip
+// with no inherent row order), so two semantically identical declarations
+// sent in different orders must normalize to one canonical order rather
+// than being told apart as if they disagreed.
+func TestNormalizeCaptureSortsAttempted(t *testing.T) {
+	r := base()
+	r.Capture = &CaptureDeclaration{Attempted: []string{"host", "device", "checkpoint_uri"}}
+	r.NormalizeCapture()
+	want := []string{"checkpoint_uri", "device", "host"}
+	if len(r.Capture.Attempted) != len(want) {
+		t.Fatalf("got %v, want %v", r.Capture.Attempted, want)
+	}
+	for i := range want {
+		if r.Capture.Attempted[i] != want[i] {
+			t.Fatalf("got %v, want %v", r.Capture.Attempted, want)
+		}
+	}
+}
+
+// TestNormalizeCaptureIsANoOpWithNoDeclaration guards the nil case:
+// NormalizeCapture must not panic, or manufacture a declaration, for a run
+// that never had one.
+func TestNormalizeCaptureIsANoOpWithNoDeclaration(t *testing.T) {
+	r := base()
+	r.NormalizeCapture()
+	if r.Capture != nil {
+		t.Fatalf("NormalizeCapture must not create a declaration where there was none, got %+v", r.Capture)
+	}
+}
+
 func TestFingerprintDistinguishesIdentityFields(t *testing.T) {
 	for name, mutate := range map[string]func(*Run){
 		"project":         func(r *Run) { r.Project = "other" },
