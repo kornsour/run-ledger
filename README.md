@@ -322,6 +322,15 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   it, the same as it wouldn't be in a fresh, uncursored request made at that
   same moment.
   ([ADR 0007](docs/adr/0007-keyset-pagination-cursor-consistency.md))
+- **`runledger.replay_spool()` raises on an unreachable ledger, unlike
+  `Run.start()`.** Replay is invoked on purpose, after training, specifically
+  to recover records — the read side's convention applies, not the write
+  side's. A `400`/`409` is quarantined to `<spool>.rejected.jsonl` instead of
+  being retried forever, since retrying the same bytes against the same
+  server gets the same answer every time; replay is safe to interrupt and
+  re-run at all because `POST /runs` is idempotent for identical content
+  under the same id.
+  ([ADR 0008](docs/adr/0008-replay-raises-quarantines-and-tracks-a-read-offset.md))
 
 ## Status
 
