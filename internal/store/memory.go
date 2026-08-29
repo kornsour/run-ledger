@@ -26,6 +26,13 @@ func (m *Memory) Record(_ context.Context, r lineage.Run) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
+	// See lineage.Run.NormalizeCapture's doc comment: Attempted is
+	// conceptually a set, but the idempotency check just below compares the
+	// whole struct with reflect.DeepEqual, which is order-sensitive for a
+	// slice. Without this, a retried request whose client happened to build
+	// Attempted in a different (but equal-as-a-set) order would be refused
+	// as a conflict for a reason that has nothing to do with what changed.
+	r.NormalizeCapture()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing, ok := m.runs[r.RunID]; ok {
@@ -87,6 +94,9 @@ func (m *Memory) List(_ context.Context, q Query) (Page, error) {
 			continue
 		}
 		if q.JobID != "" && r.JobID != q.JobID {
+			continue
+		}
+		if q.CaptureClient != "" && (r.Capture == nil || r.Capture.Client != q.CaptureClient) {
 			continue
 		}
 		if !q.Since.IsZero() && r.StartedAt.Before(q.Since) {

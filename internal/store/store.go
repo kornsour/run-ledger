@@ -67,6 +67,14 @@ type Query struct {
 	// asks for.
 	SubmitterClaim string
 	JobID          string
+	// CaptureClient filters to runs whose capture declaration names this
+	// exact client string (e.g. "runledger-py/0.1.0") -- the query ADR 0016
+	// names directly: "did capture regress in client X.Y" needs to isolate
+	// every run that client recorded, the same exact-match shape Device
+	// already has. A run with no capture declaration never matches a
+	// non-empty CaptureClient, the same way an unset Device never matches a
+	// non-empty filter.
+	CaptureClient string
 	// Limit caps the number of rows a single List call returns. Zero means
 	// unbounded — callers that page (the HTTP API's GET /runs) are expected
 	// to supply their own default and maximum; Store itself imposes none, so
@@ -144,6 +152,22 @@ type Patch struct {
 	SubmitterClaim *string
 	JobID          *string
 	Metrics        map[string]float64
+
+	// Capture (lineage.Run.Capture, ADR 0016) is deliberately not here, and
+	// that is a decision, not an oversight. Host, Device, and JobID are
+	// patchable because a run is often recorded before every fact about it
+	// is known -- a device only knowable once a job schedules onto specific
+	// hardware, a job id assigned by the scheduler after submission. A
+	// capture declaration has no such deferred-availability case: it
+	// describes what the recording client's own code tried to determine,
+	// which the client already knows in full at the moment it makes the
+	// very first request for a run (rlctl and the Python client both build
+	// it before sending anything). There is no legitimate "fill this in
+	// once known" scenario to support, and allowing one would raise a
+	// question patchability for the other fields never has to answer: whose
+	// declaration is it if a different call patches it in later? Leaving
+	// Capture out keeps it what it is by construction -- a fact about the
+	// request that created the run, fixed at that moment.
 }
 
 // Store is the persistence boundary.

@@ -215,6 +215,71 @@ func TestDuckDBLegacyRowsDefaultAttributionToEmptyString(t *testing.T) {
 	}
 }
 
+// TestDuckDBLegacyRowsHaveNoCaptureDeclaration exercises the ADR 0016
+// migration the same way the two tests above exercise ADR 0013's and ADR
+// 0015's: simulate a database that predates capture_declared/capture_client
+// (everything through the job_id migration, migrations[7], but no
+// further), insert a row directly, then open it through NewDuckDB and
+// confirm the row reads back with Capture == nil -- not a declaration that
+// merely happens to be empty. That distinction is the entire reason
+// capture_declared is a separate column rather than inferring "no
+// declaration" from capture_client == "": a pre-migration row and a
+// modern client that declares an empty capture must not become
+// indistinguishable, because examples/churn/completeness.py's
+// peer-comparison fallback depends on telling them apart (see
+// lineage.Run.Capture's doc comment and ADR 0016).
+func TestDuckDBLegacyRowsHaveNoCaptureDeclaration(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "runs.duckdb")
+
+	preMigration, err := sql.Open("duckdb", dsn)
+	if err != nil {
+		t.Fatalf("opening pre-migration duckdb: %v", err)
+	}
+	if _, err := preMigration.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("creating schema_migrations: %v", err)
+	}
+	for _, i := range []int{0, 5, 6, 7} {
+		if _, err := preMigration.ExecContext(ctx, migrations[i]); err != nil {
+			t.Fatalf("applying migrations[%d]: %v", i, err)
+		}
+		if _, err := preMigration.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, i); err != nil {
+			t.Fatalf("recording migrations[%d] as applied: %v", i, err)
+		}
+	}
+	_, err = preMigration.ExecContext(ctx, `
+		INSERT INTO runs (
+			run_id, project, git_commit, git_dirty, config_hash, dataset_version,
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, submitter_claim, job_id, status, started_at_ns,
+			ended_at_ns, checkpoint_uri
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"legacy-run", "p", "c1", false, "cfg", "", "", 0,
+		"fp", lineage.CurrentFingerprintVersion, "", "", "", "", "",
+		string(lineage.StatusSucceeded), time.Now().UnixNano(), nil, "",
+	)
+	if err != nil {
+		t.Fatalf("inserting pre-migration row: %v", err)
+	}
+	if err := preMigration.Close(); err != nil {
+		t.Fatalf("closing pre-migration handle: %v", err)
+	}
+
+	s, err := NewDuckDB(dsn)
+	if err != nil {
+		t.Fatalf("NewDuckDB against a pre-migration database: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+
+	got, err := s.Get(ctx, "legacy-run")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Capture != nil {
+		t.Fatalf("want a pre-migration row to read back with Capture == nil (no declaration, not an empty one), got %+v", got.Capture)
+	}
+}
+
 func TestDuckDBMigrateIsIdempotent(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "runs.duckdb")
 	s, err := NewDuckDB(dsn)
