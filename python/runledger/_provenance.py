@@ -27,10 +27,21 @@ def framework_version() -> str:
 
 
 def device_name() -> str:
-    """The active accelerator's name, or "cpu" if none is visible."""
+    """The active accelerator's name; "cpu" if a library checked and found
+    none; "" if neither library could be asked.
+
+    ADR 0011: "" means "not recorded". Returning "cpu" when neither
+    ``torch`` nor ``jax`` imports would assert an observation this process
+    never made -- and it would be indistinguishable downstream from a run
+    that genuinely imported one of them and got told there was no
+    accelerator. Only the latter earns "cpu": at least one library
+    imported and answered, and the answer was no.
+    """
+    observed = False
     try:
         import torch  # type: ignore
 
+        observed = True
         if torch.cuda.is_available():
             return torch.cuda.get_device_name(0)
     except Exception:
@@ -38,9 +49,10 @@ def device_name() -> str:
     try:
         import jax  # type: ignore
 
+        observed = True
         devices = jax.devices()
         if devices:
             return str(devices[0])
     except Exception:
         pass
-    return "cpu"
+    return "cpu" if observed else ""
