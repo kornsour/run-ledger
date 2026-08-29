@@ -219,13 +219,44 @@ client emits a `RuntimeWarning` and appends the run record as one JSON line
 to a local spool file (`~/.runledger/spool.jsonl` by default, or
 `spool_path=` on `Run.start()`) instead of raising. `run.spooled` is `True`
 when that happened, and `run.resolved_spool_path()` is the file it actually
-wrote — `spool_path` keeps whatever you passed, `~` and all. Re-record spooled lines later with, e.g.:
+wrote — `spool_path` keeps whatever you passed, `~` and all.
+
+### Replaying a spool
+
+Getting spooled records back into the ledger is naturally idempotent:
+`started_at` is client-supplied and part of the spooled payload, and the
+server derives `run_id` from the fingerprint plus that timestamp, so
+re-sending the same line twice lands on the same run both times. That is
+what makes replay safe to interrupt and re-run.
+
+```python
+import runledger
+
+result = runledger.replay_spool()                    # default spool path
+result = runledger.replay_spool(path, dry_run=True)   # report without sending
+print(result.sent, result.rejected, result.remaining)
+```
+
+Or from a shell, after the fact:
 
 ```bash
-while IFS= read -r line; do
-  curl -sS -X POST "$RUNLEDGER_ADDR/runs" -H 'Content-Type: application/json' -d "$line"
-done < ~/.runledger/spool.jsonl
+python -m runledger.replay                 # default spool path
+python -m runledger.replay --dry-run        # report without sending
+python -m runledger.replay ~/other-spool.jsonl --server https://ledger.example.com
 ```
+
+`replay_spool()` reads from `$RUNLEDGER_ADDR` / `$RUNLEDGER_TOKEN`, the same
+way `Run.start()` does. Records the ledger accepts are removed from the
+spool; records it will *never* accept — a `400` or a `409` against a run id
+that already exists with different content — are moved to
+`<spool>.rejected.jsonl` instead of being retried forever. Unlike
+`Run.start()`, this raises `runledger.LedgerUnreachableError` rather than
+degrading, matching the read side: replay is something you invoke on
+purpose to recover records, so silently reporting partial progress would be
+the wrong default. Whatever was sent or rejected earlier in the call is not
+undone; the record that failed, and everything after it — including
+anything a live training run appended to the spool in the meantime — stays
+in the spool for the next attempt.
 
 ## Configuration
 

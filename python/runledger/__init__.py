@@ -25,6 +25,15 @@ and a local spool file, because recording lineage must never fail an
 expensive training job. Reading raises, because silently returning nothing
 when the ledger is down answers "how did my experiments do?" with "they
 didn't" -- a worse outcome than an exception.
+
+Getting a spool back into the ledger is a third thing, done later and on
+purpose, and lives in ``replay``:
+
+    result = runledger.replay_spool()
+    print(result.sent, result.rejected, result.remaining)
+
+or from a shell: ``python -m runledger.replay``. See ``replay.py`` for why
+this is safe to interrupt and re-run.
 """
 
 from .read import (
@@ -36,6 +45,7 @@ from .read import (
     spread,
 )
 from ._run import DirtyTreeError, NoGitCommitError, Run, UnreconstructibleRunError
+from .replay import ReplayResult, replay_spool
 
 __all__ = [
     # writing
@@ -50,6 +60,9 @@ __all__ = [
     "LedgerError",
     "LedgerUnreachableError",
     "RunNotFoundError",
+    # recovering a spool
+    "replay_spool",
+    "ReplayResult",
 ]
 
 __version__ = "0.1.0"
