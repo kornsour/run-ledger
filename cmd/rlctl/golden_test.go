@@ -325,12 +325,16 @@ func TestGoldenRenderList(t *testing.T) {
 
 // TestGoldenRenderShow covers `rlctl show`'s indented-JSON output.
 //
-// Deliberately one case, not an absent-vs-empty pair: unlike every other
-// renderer here, renderShow has no way to make that distinction today. See
-// renderShow's doc comment and lineage.Run's own comment on Host/Device/
-// FrameworkVersion/ConfigHash/DatasetVersion/ModelVersion for why that gap
-// is accepted and out of scope for this change, not something this test
-// should paper over by asserting an invariant the renderer cannot meet.
+// Deliberately one case, not an absent-vs-empty pair -- and not because
+// renderShow falls short of an invariant it should meet. ADR 0011 decided
+// that for config_hash, dataset_version, model_version, host, device,
+// framework_version, and checkpoint_uri (and submitter_claim/job_id under
+// the same rule per compare.go), "" and "not recorded" are one meaning with
+// two spellings, not two states worth telling apart -- the ADR's own words
+// are that widening these to pointers to preserve a distinction was
+// considered and rejected, because no experiment has a genuinely empty
+// dataset_version. So there is only one state for this surface to render,
+// and this fixture is that one state, not an accepted gap.
 func TestGoldenRenderShow(t *testing.T) {
 	ended := time.Date(2026, 3, 4, 16, 0, 0, 0, time.UTC)
 	run := lineage.Run{
@@ -339,8 +343,12 @@ func TestGoldenRenderShow(t *testing.T) {
 		DatasetVersion: "v3", ModelVersion: "v7", Seed: 42,
 		Params: map[string]string{"lr": "0.0003"},
 		Host:   "gpu-node-01", Device: "cuda:0", FrameworkVersion: "torch==2.5.0",
-		// Empty on purpose: this is the field the doc comment above is
-		// about. It encodes exactly like a run that never set Host at all.
+		// Empty on purpose, and correctly rendered as such: per ADR 0011,
+		// "" here means "not recorded", the same claim a client that
+		// omitted submitter_claim entirely would be making. This is not the
+		// same "empty on purpose" as params.tag elsewhere in this file --
+		// params are exempt from ADR 0011 and keep their absent/empty
+		// distinction.
 		SubmitterClaim: "",
 		JobID:          "slurm-7",
 		Status:         lineage.StatusSucceeded,

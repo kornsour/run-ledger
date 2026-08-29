@@ -328,16 +328,14 @@ func cmdShow(args []string) error {
 // testable. Mirrors renderDiff's split for the same reason.
 //
 // Unlike every other renderer here, this one does NOT get an
-// absent-vs-empty golden case: encoding/json has no omitempty on Host,
-// Device, FrameworkVersion, ConfigHash, DatasetVersion, or ModelVersion, so
-// a run that never recorded one of those and a run that recorded it as ""
-// both encode as `""` -- see lineage.Run's own doc comment, which names this
-// gap and the reason it is not closed here (widening those fields to
-// pointers ripples into Compute and every JSON decode site, a bigger,
-// separately-scoped change). Asserting the invariant against this renderer
-// would just fail on a gap the codebase has already scoped out on purpose;
-// the golden fixture below records today's output, gap included, rather
-// than pretending the gap doesn't exist.
+// absent-vs-empty golden case, and that is not a gap: ADR 0011 settled that
+// for config_hash, dataset_version, model_version, host, device,
+// framework_version, and checkpoint_uri (and, per compare.go, submitter_claim
+// and job_id under the same rule), "" and "not recorded" are the same claim,
+// not two states that merely happen to share a spelling. encoding/json
+// therefore encoding both as `""` is correct, not a limitation this renderer
+// fails to close -- there is only one state here to render, so there is
+// nothing for the invariant to check.
 func renderShow(w io.Writer, run lineage.Run) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
