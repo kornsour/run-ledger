@@ -155,6 +155,61 @@ func TestBadCursorIsRejected(t *testing.T) {
 	}
 }
 
+func TestUnknownQueryParamIsRejected(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?projct=demo", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a typo'd query parameter must be refused, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestInvalidStatusIsRejected(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?status=succeded", nil))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("a typo'd status must be refused, not silently return an empty result, got %d: %s", w.Code, w.Body)
+	}
+}
+
+func TestValidStatusIsAccepted(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+	}
+
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/runs?status=created", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body)
+	}
+	var got struct {
+		Count int `json:"count"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Count != 1 {
+		t.Fatalf("want the one created run, got %d", got.Count)
+	}
+}
+
+func TestListWithRecognizedParamsStillWorks(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","device":"gpu0"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("setup failed: %d %s", w.Code, w.Body)
+	}
+	var run map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &run)
+	fingerprint := run["fingerprint"].(string)
+
+	url := fmt.Sprintf("/runs?project=p&git_commit=abc&fingerprint=%s&status=created&device=gpu0&limit=10&cursor=", fingerprint)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, url, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for a query using only recognized params, got %d: %s", w.Code, w.Body)
+	}
+}
+
 func TestListDefaultsAndCapsLimit(t *testing.T) {
 	h := srv(t)
 	for i := 0; i < 3; i++ {

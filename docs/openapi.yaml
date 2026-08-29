@@ -74,7 +74,9 @@ paths:
     get:
       operationId: listRuns
       summary: List runs
-      description: Paginated, newest-first by started_at then run_id.
+      description: >
+        Paginated, newest-first by started_at then run_id. Unrecognized
+        query parameters are rejected rather than silently ignored.
       security:
         - bearerAuth: []
         - {}

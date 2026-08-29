@@ -382,8 +382,22 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// listQueryParams is the full set of query parameters GET /runs recognizes.
+// A typo (?projct=demo) must be refused, not silently ignored -- the same
+// reasoning as ADR 0002, applied to the query string instead of the body.
+var listQueryParams = map[string]bool{
+	"project": true, "git_commit": true, "fingerprint": true,
+	"status": true, "device": true, "limit": true, "cursor": true,
+}
+
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	for key := range q {
+		if !listQueryParams[key] {
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown query parameter %q", key))
+			return
+		}
+	}
 	limit, err := parseLimit(q.Get("limit"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -398,11 +412,16 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		}
 		after = &c
 	}
+	status := lineage.Status(q.Get("status"))
+	if status != "" && !lineage.ValidStatus(status) {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown status %q", status))
+		return
+	}
 	page, err := s.store.List(r.Context(), store.Query{
 		Project:     q.Get("project"),
 		GitCommit:   q.Get("git_commit"),
 		Fingerprint: q.Get("fingerprint"),
-		Status:      lineage.Status(q.Get("status")),
+		Status:      status,
 		Device:      q.Get("device"),
 		Limit:       limit,
 		After:       after,
