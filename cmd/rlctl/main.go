@@ -282,23 +282,31 @@ func cmdList(args []string) error {
 	if err := call(http.MethodGet, *server, "/runs?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
-	if out.Count == 0 {
-		fmt.Println("no runs recorded")
-		return nil
+	renderList(os.Stdout, out.Runs, out.NextCursor)
+	return nil
+}
+
+// renderList prints the `list` table. Split out from cmdList, which can only
+// be exercised against a live server, so the table -- column widths, the
+// empty-page message, the cursor hint -- is directly testable. Mirrors
+// renderDiff's split for the same reason.
+func renderList(w io.Writer, runs []lineage.Run, nextCursor string) {
+	if len(runs) == 0 {
+		fmt.Fprintln(w, "no runs recorded")
+		return
 	}
-	fmt.Printf("%-28s  %-12s  %-10s  %-10s  %s\n", "RUN", "PROJECT", "STATUS", "COMMIT", "STARTED")
-	for _, r := range out.Runs {
-		fmt.Printf("%-28s  %-12s  %-10s  %-10s  %s\n",
+	fmt.Fprintf(w, "%-28s  %-12s  %-10s  %-10s  %s\n", "RUN", "PROJECT", "STATUS", "COMMIT", "STARTED")
+	for _, r := range runs {
+		fmt.Fprintf(w, "%-28s  %-12s  %-10s  %-10s  %s\n",
 			r.RunID, trunc(r.Project, 12), r.Status, trunc(r.GitCommit, 10),
 			r.StartedAt.Local().Format(time.RFC3339))
 	}
 	// A page reflects the ledger as of the cursor's position: a run recorded
 	// after this list started, and sorting earlier than the traversal has
 	// reached, will not appear when you follow this cursor.
-	if out.NextCursor != "" {
-		fmt.Printf("\nmore runs available: rlctl list ... --cursor %s\n", out.NextCursor)
+	if nextCursor != "" {
+		fmt.Fprintf(w, "\nmore runs available: rlctl list ... --cursor %s\n", nextCursor)
 	}
-	return nil
 }
 
 func cmdShow(args []string) error {
@@ -312,7 +320,24 @@ func cmdShow(args []string) error {
 	if err := call(http.MethodGet, *server, "/runs/"+url.PathEscape(fs.Arg(0)), nil, &run); err != nil {
 		return err
 	}
-	enc := json.NewEncoder(os.Stdout)
+	return renderShow(os.Stdout, run)
+}
+
+// renderShow prints one run as indented JSON. Split out from cmdShow, which
+// can only be exercised against a live server, so the encoding is directly
+// testable. Mirrors renderDiff's split for the same reason.
+//
+// Unlike every other renderer here, this one does NOT get an
+// absent-vs-empty golden case, and that is not a gap: ADR 0011 settled that
+// for config_hash, dataset_version, model_version, host, device,
+// framework_version, and checkpoint_uri (and, per compare.go, submitter_claim
+// and job_id under the same rule), "" and "not recorded" are the same claim,
+// not two states that merely happen to share a spelling. encoding/json
+// therefore encoding both as `""` is correct, not a limitation this renderer
+// fails to close -- there is only one state here to render, so there is
+// nothing for the invariant to check.
+func renderShow(w io.Writer, run lineage.Run) error {
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(run)
 }
@@ -403,17 +428,30 @@ func spreadList(server, project string) error {
 	if err := call(http.MethodGet, server, "/fingerprints?"+q.Encode(), nil, &out); err != nil {
 		return err
 	}
-	if out.Count == 0 {
-		fmt.Println("no fingerprint has more than one recorded run")
-		return nil
+	renderSpreadList(os.Stdout, out.Groups)
+	return nil
+}
+
+// renderSpreadList prints the `spread` (no fingerprint argument) table.
+// Split out from spreadList, which can only be exercised against a live
+// server, so the table is directly testable. Mirrors renderDiff's split for
+// the same reason.
+//
+// Takes groups rather than the count the server also returns: the count is
+// always len(groups) for this endpoint (there is no filtering between the
+// two), so a second, independently-suppliable number here would only invite
+// the two to drift apart with nothing to catch it.
+func renderSpreadList(w io.Writer, groups []spread.Group) {
+	if len(groups) == 0 {
+		fmt.Fprintln(w, "no fingerprint has more than one recorded run")
+		return
 	}
 	// The server already ranks widest-first; keep that order.
-	fmt.Printf("%-18s  %-5s  %-10s  %s\n", "FINGERPRINT", "RUNS", "WIDEST CV", "PROVENANCE DIFFERS")
-	for _, g := range out.Groups {
-		fmt.Printf("%-18s  %-5d  %-10.4f  %s\n",
+	fmt.Fprintf(w, "%-18s  %-5s  %-10s  %s\n", "FINGERPRINT", "RUNS", "WIDEST CV", "PROVENANCE DIFFERS")
+	for _, g := range groups {
+		fmt.Fprintf(w, "%-18s  %-5d  %-10.4f  %s\n",
 			trunc(g.Fingerprint, 18), g.Count, g.Widest(), provenanceFields(g.Provenance))
 	}
-	return nil
 }
 
 func spreadOne(server, fingerprint string) error {

@@ -1,0 +1,7 @@
+same experiment (fingerprints match)
+
+FIELD                     KIND          A                     B
+metrics.loss              metric        0.42                  0.51
+
+These runs describe the same experiment but measured differently.
+Something that affected the result is not captured in the record.

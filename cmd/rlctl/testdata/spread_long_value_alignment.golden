@@ -1,0 +1,7 @@
+fingerprint fp-long — 2 run(s)
+
+METRIC                N     MIN           MAX           MEAN          STDDEV
+validation_accuracy_at_end_of_epoch_ten  2     0.9           0.91          0.905         0.005
+
+provenance differs across these runs — the likeliest explanation for the spread:
+  framework_version  torch==2.4.1+cu121-nightly-build-2024-08-15-abcdefabcdef, torch==2.5.0
