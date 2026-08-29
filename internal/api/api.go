@@ -399,6 +399,16 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	// The server computes the fingerprint; a client-supplied one would let a
 	// caller assert that two different experiments were the same.
 	run.Fingerprint = run.Compute()
+	// FingerprintVersion is stamped in the same breath as Fingerprint, never
+	// independently: Compute always implements CurrentFingerprintVersion
+	// (see lineage.Run.Compute's doc and ADR 0013), so any Fingerprint this
+	// line just produced is, by construction, a CurrentFingerprintVersion
+	// fingerprint. A client-supplied fingerprint_version is discarded the
+	// same way a client-supplied fingerprint is -- ADR 0001's rule ("the
+	// server computes the fingerprint, never the client") covers the
+	// version tag too, or a client could claim an old, unnormalized
+	// fingerprint was produced under today's contract.
+	run.FingerprintVersion = lineage.CurrentFingerprintVersion
 	if run.RunID == "" {
 		// started_at is client-supplied, so two legitimate repeats of the same
 		// experiment sharing a coarse timestamp (e.g. a scheduler emitting

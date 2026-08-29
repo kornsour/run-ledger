@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,13 +39,29 @@ type Run struct {
 	// with none of these set. Widening them to pointers would ripple into
 	// Compute's hashing and every caller that decodes a lineage.Run from
 	// JSON, which is a bigger, separately-scoped change than this fix.
-	RunID            string    `json:"run_id"`
-	Fingerprint      string    `json:"fingerprint"`
-	Host             string    `json:"host"`
-	Device           string    `json:"device"`
-	FrameworkVersion string    `json:"framework_version"`
-	Status           Status    `json:"status"`
-	StartedAt        time.Time `json:"started_at"`
+	RunID       string `json:"run_id"`
+	Fingerprint string `json:"fingerprint"`
+	// FingerprintVersion records which version of Compute's hashing contract
+	// produced Fingerprint -- see ADR 0004 and ADR 0013. It is provenance
+	// about the fingerprint, not an input to it: hashing the version itself
+	// would be circular, the same reason Fingerprint is not hashed either.
+	//
+	// Never set this directly. The server stamps it alongside Fingerprint
+	// (api.record) whenever it computes a fresh one, and every Store
+	// implementation persists and returns whatever was stamped. A run
+	// decoded from a source that predates this field -- a JSON payload
+	// written before FingerprintVersion existed, or a store row from before
+	// its migration -- must not be read as FingerprintVersion's Go zero
+	// value (0), which names no real contract. DuckDB's migration backfills
+	// every pre-existing row to FingerprintVersionLegacy explicitly, and any
+	// other caller constructing a Run by hand for a legacy value should do
+	// the same rather than leave the field at its zero value.
+	FingerprintVersion int       `json:"fingerprint_version"`
+	Host               string    `json:"host"`
+	Device             string    `json:"device"`
+	FrameworkVersion   string    `json:"framework_version"`
+	Status             Status    `json:"status"`
+	StartedAt          time.Time `json:"started_at"`
 	// EndedAt is a pointer because a struct's zero value is never omitted by
 	// encoding/json's "omitempty" -- without the pointer, every run that
 	// hasn't ended would serialize ended_at as 0001-01-01T00:00:00Z instead
@@ -78,6 +96,32 @@ func Terminal(s Status) bool {
 	return s == StatusSucceeded || s == StatusFailed || s == StatusCancelled
 }
 
+// Fingerprint hashing contract versions. See ADR 0004 (the fingerprint input
+// is a versioned contract) and ADR 0013 (param values are normalized before
+// hashing).
+const (
+	// FingerprintVersionLegacy is the contract in effect before ADR 0013:
+	// Params were hashed by the literal string spelling a client sent, so
+	// "3e-4", "0.0003", and "0.00030" fingerprinted as three different
+	// experiments. There is no way to recompute a legacy fingerprint under
+	// today's Compute and expect it to still match what was stored --
+	// Compute only ever implements the current contract -- so this constant
+	// exists purely to label old records, never to select old behavior.
+	// Every run recorded before FingerprintVersion existed is this version,
+	// by definition of the migration that introduced the field (see
+	// internal/store/duckdb.go's schema migration), not by anything
+	// recomputed from its content.
+	FingerprintVersionLegacy = 1
+	// CurrentFingerprintVersion is the contract Compute implements: param
+	// values that parse as a finite decimal number are rewritten to a
+	// canonical spelling (normalizeParamValue) before hashing, so numeric
+	// params with different spellings but the same value fingerprint
+	// identically. Bump this, and add a new FingerprintVersion* constant
+	// documenting what changed, the next time Compute's input changes --
+	// per ADR 0004, that is never a change made without one.
+	CurrentFingerprintVersion = 2
+)
+
 // ErrDirtyTree is returned by Validate when a run reports a dirty working tree
 // without an explicit config hash. A dirty tree means the commit does not
 // describe the code that ran, so the config hash is the only remaining handle
@@ -104,11 +148,20 @@ func (r *Run) Validate() error {
 	return nil
 }
 
-// Compute returns the content-addressed fingerprint of a run's identity fields.
+// Compute returns the content-addressed fingerprint of a run's identity
+// fields. It always implements CurrentFingerprintVersion -- Compute has no
+// notion of "compute the old way," because a fingerprint already recorded
+// under FingerprintVersionLegacy is never recomputed (see FingerprintVersion
+// and ADR 0004): it stays exactly what was stored, and FingerprintVersion is
+// what tells a reader which contract produced it.
 //
 // Map iteration order in Go is deliberately randomized, so Params is sorted
 // before hashing: the same experiment described twice must produce the same
-// fingerprint, or nothing downstream can group runs.
+// fingerprint, or nothing downstream can group runs. Each param value is
+// also normalized (normalizeParamValue) before hashing, so a param that
+// merely looks like a different spelling of the same number -- "3e-4" versus
+// "0.0003" versus "0.00030" -- hashes the same regardless of which spelling
+// a particular client happened to send (ADR 0013).
 func (r *Run) Compute() string {
 	h := sha256.New()
 	write := func(parts ...string) {
@@ -126,7 +179,101 @@ func (r *Run) Compute() string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		write(k, r.Params[k])
+		write(k, normalizeParamValue(r.Params[k]))
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// numericParamPattern matches the shape Compute treats as "a number, however
+// it's spelled": an optional sign, a JSON-number-shaped integer part (no
+// leading zeros, matching RFC 8259) or a bare leading decimal point, an
+// optional fractional part, and an optional exponent.
+//
+// It deliberately does not match everything strconv.ParseFloat accepts,
+// because ParseFloat's grammar is Go's floating-point-literal syntax, not
+// "numbers as ML tooling and JSON spell them," and two things it accepts
+// would silently misfire if this function fed them straight to ParseFloat:
+//
+//   - "1_000": ParseFloat accepts underscores as a Go numeric-literal digit
+//     separator. A param value is arbitrary user/CLI/JSON input, not Go
+//     source -- nothing else in this system treats "1_000" as a spelling of
+//     1000, so silently normalizing it here would be Compute inventing an
+//     equivalence no client asked for.
+//   - "007": ParseFloat parses leading zeros as an ordinary decimal (007 ==
+//     7). A zero-padded value is at least as likely to be an opaque
+//     identifier -- a shard id, a zero-padded run suffix -- as a number
+//     whose leading zeros are insignificant, and this package has no basis
+//     for guessing which. JSON's own number grammar excludes leading zeros
+//     for the same reason; this pattern follows it.
+//
+// "NaN", "Inf", "-Inf", and "Infinity" are excluded structurally, not by
+// special-casing the literal strings: they contain letters the pattern
+// doesn't allow outside the "e"/"E" exponent marker, so they never reach
+// strconv.ParseFloat and pass through Compute unchanged. That is deliberate
+// even though ParseFloat itself accepts all four (case-insensitively) with
+// no error -- unlike a finite number, there is no single canonical spelling
+// two different "Inf" literals necessarily agree on being about the same
+// underlying value, and NaN famously isn't equal to itself, which would make
+// folding every NaN spelling into one canonical string actively misleading
+// as an identity key rather than merely unnormalized.
+var numericParamPattern = regexp.MustCompile(`^-?((0|[1-9]\d*)(\.\d+)?|\.\d+)([eE][+-]?\d+)?$`)
+
+// normalizeParamValue rewrites v to a canonical spelling when it is
+// unambiguously a finite decimal number, so the same hyperparameter value
+// hashes identically no matter which of several equivalent spellings a
+// client sent. A value this function does not recognize as numeric --
+// including every case numericParamPattern's doc comment calls out --
+// passes through byte-for-byte unchanged: normalizing is only ever a no-op
+// or a like-for-like rewrite, never a way to lose information Compute has no
+// basis for discarding.
+func normalizeParamValue(v string) string {
+	if !numericParamPattern.MatchString(v) {
+		return v
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		// The pattern already guarantees valid float syntax, so the only
+		// way ParseFloat still errors is ErrRange: v is a syntactically
+		// well-formed number too large for float64 (e.g. "1e400", which
+		// ParseFloat resolves to +Inf plus this error). Formatting that
+		// would silently collapse every magnitude beyond float64's range
+		// onto one canonical "+Inf" spelling -- a far bigger identity
+		// change than reconciling spellings of the same in-range number --
+		// so an unrepresentable magnitude is left exactly as written.
+		return v
+	}
+	if f == 0 && !isZeroLiteral(v) {
+		// The mirror image of the overflow case, and easier to miss:
+		// ParseFloat silently underflows a nonzero magnitude too small for
+		// float64 (e.g. "1e-400") to exactly 0, with no error at all.
+		// Formatting that would conflate a tiny-but-nonzero literal with an
+		// actual zero, so it gets the same treatment as overflow -- left
+		// alone rather than misrepresented.
+		return v
+	}
+	if f == 0 {
+		// "-0", "-0.0", and "0" are the same hyperparameter value, but
+		// FormatFloat renders a parsed negative zero back out as "-0" --
+		// collapse the sign so they hash identically rather than keeping
+		// the two apart for a distinction nothing measures.
+		f = 0
+	}
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+// isZeroLiteral reports whether s's significant digits (everything before
+// an exponent marker) are all zero -- i.e. s spells an exact zero rather
+// than a nonzero magnitude that merely underflows float64 to 0. Only
+// meaningful once numericParamPattern has already confirmed s is
+// number-shaped, which is the only way normalizeParamValue calls it.
+func isZeroLiteral(s string) bool {
+	if i := strings.IndexAny(s, "eE"); i >= 0 {
+		s = s[:i]
+	}
+	for _, r := range s {
+		if r >= '1' && r <= '9' {
+			return false
+		}
+	}
+	return true
 }

@@ -111,6 +111,28 @@ var migrations = []string{
 	// anything?" grouping.
 	`CREATE INDEX IF NOT EXISTS idx_runs_project_started ON runs (project, started_at_ns DESC)`,
 	`CREATE INDEX IF NOT EXISTS idx_runs_fingerprint ON runs (fingerprint)`,
+	// ADR 0013: Compute now normalizes numeric param spellings before
+	// hashing, which changes what Fingerprint means for any run recorded
+	// from here on. Every row that already exists at the moment this
+	// migration runs was fingerprinted under the old, unnormalized contract
+	// -- ADR 0004 is explicit that such a change must never silently
+	// reinterpret what's already stored, so this only adds a column, never
+	// touches the fingerprint column itself. DEFAULT 1 backfills every
+	// pre-existing row to lineage.FingerprintVersionLegacy in the same
+	// statement that adds the column, so there is no window where a
+	// pre-migration row reads back with an undefined version. Every row
+	// inserted after this migration gets an explicit value from the caller
+	// (api.record stamps lineage.CurrentFingerprintVersion), so the default
+	// only ever fires for rows that predate the column.
+	//
+	// Not declared NOT NULL: this DuckDB version rejects ADD COLUMN with an
+	// inline column constraint ("Adding columns with constraints not yet
+	// supported"). DEFAULT alone still backfills every existing row to a
+	// real value, and Record always supplies an explicit
+	// FingerprintVersion for every future insert, so a NULL in this column
+	// should never occur in practice -- the constraint would only catch a
+	// bug that got this far already writing bad data, not prevent one.
+	`ALTER TABLE runs ADD COLUMN fingerprint_version INTEGER DEFAULT 1`,
 }
 
 func (d *DuckDB) migrate(ctx context.Context) error {
@@ -190,12 +212,12 @@ func (d *DuckDB) Record(ctx context.Context, r lineage.Run) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO runs (
 			run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, status, started_at_ns, ended_at_ns, checkpoint_uri
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.RunID, r.Project, r.GitCommit, r.GitDirty, r.ConfigHash, r.DatasetVersion,
-		r.ModelVersion, r.Seed, r.Fingerprint, r.Host, r.Device, r.FrameworkVersion,
-		string(r.Status), r.StartedAt.UnixNano(), endedAt, r.CheckpointURI,
+		r.ModelVersion, r.Seed, r.Fingerprint, r.FingerprintVersion, r.Host, r.Device,
+		r.FrameworkVersion, string(r.Status), r.StartedAt.UnixNano(), endedAt, r.CheckpointURI,
 	)
 	if err != nil {
 		return fmt.Errorf("inserting run: %w", err)
@@ -286,8 +308,8 @@ func (d *DuckDB) Get(ctx context.Context, runID string) (lineage.Run, error) {
 func (d *DuckDB) get(ctx context.Context, q queryer, runID string) (lineage.Run, error) {
 	r, err := scanRun(q.QueryRowContext(ctx, `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, status, started_at_ns, ended_at_ns, checkpoint_uri
 		FROM runs WHERE run_id = ?`, runID))
 	if err != nil {
 		return lineage.Run{}, err
@@ -310,8 +332,8 @@ func scanRun(row *sql.Row) (lineage.Run, error) {
 	var endedAtNS sql.NullInt64
 	err := row.Scan(
 		&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
-		&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.Host, &r.Device, &r.FrameworkVersion,
-		&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+		&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
+		&r.FrameworkVersion, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 	)
 	if err == sql.ErrNoRows {
 		return lineage.Run{}, ErrNotFound
@@ -401,8 +423,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 
 	sqlStr := `
 		SELECT run_id, project, git_commit, git_dirty, config_hash, dataset_version,
-			model_version, seed, fingerprint, host, device, framework_version,
-			status, started_at_ns, ended_at_ns, checkpoint_uri
+			model_version, seed, fingerprint, fingerprint_version, host, device,
+			framework_version, status, started_at_ns, ended_at_ns, checkpoint_uri
 		FROM runs`
 	if len(where) > 0 {
 		sqlStr += " WHERE " + strings.Join(where, " AND ")
@@ -431,8 +453,8 @@ func (d *DuckDB) List(ctx context.Context, query Query) (Page, error) {
 		var endedAtNS sql.NullInt64
 		if err := rows.Scan(
 			&r.RunID, &r.Project, &r.GitCommit, &r.GitDirty, &r.ConfigHash, &r.DatasetVersion,
-			&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.Host, &r.Device, &r.FrameworkVersion,
-			&status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
+			&r.ModelVersion, &r.Seed, &r.Fingerprint, &r.FingerprintVersion, &r.Host, &r.Device,
+			&r.FrameworkVersion, &status, &startedAtNS, &endedAtNS, &r.CheckpointURI,
 		); err != nil {
 			rows.Close()
 			return Page{}, err

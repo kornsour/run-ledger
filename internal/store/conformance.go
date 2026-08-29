@@ -24,7 +24,12 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 			Project: project, GitCommit: "c" + id, ConfigHash: "cfg",
 			RunID: id, Status: lineage.StatusSucceeded, StartedAt: at, Device: "cpu",
 		}
+		// Fingerprint and FingerprintVersion are always stamped together --
+		// Compute always implements CurrentFingerprintVersion, so a run
+		// whose Fingerprint came from a fresh Compute() call must record
+		// that version, the same pairing api.record does for a real request.
 		r.Fingerprint = r.Compute()
+		r.FingerprintVersion = lineage.CurrentFingerprintVersion
 		return r
 	}
 
