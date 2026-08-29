@@ -295,7 +295,7 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		if got.Status != lineage.StatusSucceeded || got.Metrics["loss"] != 0.1 {
 			t.Fatalf("want succeeded with loss=0.1, got %+v", got)
 		}
-		if !got.EndedAt.Equal(endedAt) {
+		if got.EndedAt == nil || !got.EndedAt.Equal(endedAt) {
 			t.Fatalf("ended_at not applied: got %v, want %v", got.EndedAt, endedAt)
 		}
 
@@ -306,6 +306,58 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		if reGot.Status != lineage.StatusSucceeded || reGot.Metrics["loss"] != 0.1 {
 			t.Fatalf("update did not persist: %+v", reGot)
+		}
+	})
+
+	t.Run("a recorded run has no ended_at until it ends", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.EndedAt != nil {
+			t.Fatalf("want no ended_at on an unfinished run, got %v", got.EndedAt)
+		}
+	})
+
+	t.Run("a terminal update with no ended_at defaults it to receive time", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+
+		before := time.Now()
+		succeeded := lineage.StatusSucceeded
+		got, err := s.Update(ctx, "a", Patch{Status: &succeeded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := time.Now()
+
+		if got.EndedAt == nil {
+			t.Fatal("want ended_at defaulted on a terminal transition, got nil")
+		}
+		// Generous tolerance -- this is checking "did the store stamp receive
+		// time," not measuring latency.
+		if got.EndedAt.Before(before.Add(-5*time.Second)) || got.EndedAt.After(after.Add(5*time.Second)) {
+			t.Fatalf("want ended_at near now (%v..%v), got %v", before, after, got.EndedAt)
+		}
+
+		reGot, err := s.Get(ctx, "a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reGot.EndedAt == nil || !reGot.EndedAt.Equal(*got.EndedAt) {
+			t.Fatalf("defaulted ended_at did not persist: got %v, want %v", reGot.EndedAt, got.EndedAt)
 		}
 	})
 
@@ -384,6 +436,74 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 	})
 
+	t.Run("an identical terminal patch retried is not a conflict", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		first, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}})
+		if err != nil {
+			t.Fatalf("first terminal patch: %v", err)
+		}
+
+		// A client with at-least-once delivery (e.g. a lost response) retries
+		// the exact same request; the run is already terminal and the patch
+		// asks for exactly what's already stored, so this must succeed rather
+		// than 409 -- a 409 here is indistinguishable from an attempt to
+		// rewrite the run's identity or outcome, which is not what happened.
+		second, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}})
+		if err != nil {
+			t.Fatalf("identical retried terminal patch must not conflict, got %v", err)
+		}
+		if second.Status != lineage.StatusSucceeded || second.Metrics["loss"] != 0.4 {
+			t.Fatalf("want the unchanged run back, got %+v", second)
+		}
+		if second.EndedAt == nil || !second.EndedAt.Equal(*first.EndedAt) {
+			t.Fatalf("a no-op retry must not move ended_at, want %v, got %v", first.EndedAt, second.EndedAt)
+		}
+	})
+
+	t.Run("a terminal patch with a genuinely different metric value still conflicts", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		if _, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Update(ctx, "a", Patch{Metrics: map[string]float64{"loss": 0.9}}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a different metric value on a terminal run must still conflict, got %v", err)
+		}
+	})
+
+	t.Run("a terminal patch adding a brand-new metric key still conflicts", func(t *testing.T) {
+		s := newStore(t)
+		r := mk("a", "p", time.Now())
+		r.Status = lineage.StatusRunning
+		r.Metrics = map[string]float64{"loss": 0.4}
+		r.Fingerprint = r.Compute()
+		if err := s.Record(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		succeeded := lineage.StatusSucceeded
+		if _, err := s.Update(ctx, "a", Patch{Status: &succeeded, Metrics: map[string]float64{"loss": 0.4}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Update(ctx, "a", Patch{Metrics: map[string]float64{"accuracy": 0.9}}); !errors.Is(err, ErrConflict) {
+			t.Fatalf("a new metric key on a terminal run must still conflict even though existing keys match, got %v", err)
+		}
+	})
+
 	t.Run("update rejects an unknown status", func(t *testing.T) {
 		s := newStore(t)
 		r := mk("a", "p", time.Now())
@@ -438,6 +558,95 @@ func RunConformance(t *testing.T, newStore func(t *testing.T) Store) {
 		}
 		if page.Next != nil {
 			t.Fatalf("a page that exhausts the result set must not report a next cursor, got %+v", page.Next)
+		}
+	})
+
+	t.Run("since and until narrow the listing to a half-open time range", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		_ = s.Record(ctx, mk("before", "p", base.Add(-time.Hour)))
+		_ = s.Record(ctx, mk("at-since", "p", base))
+		_ = s.Record(ctx, mk("mid", "p", base.Add(time.Hour)))
+		_ = s.Record(ctx, mk("at-until", "p", base.Add(2*time.Hour)))
+		_ = s.Record(ctx, mk("after", "p", base.Add(3*time.Hour)))
+
+		page, err := s.List(ctx, Query{Project: "p", Since: base, Until: base.Add(2 * time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Newest first: at-until is excluded (Until is exclusive), at-since is
+		// included (Since is inclusive), before/after fall outside the range
+		// entirely.
+		want := []string{"mid", "at-since"}
+		var got []string
+		for _, r := range page.Runs {
+			got = append(got, r.RunID)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("want %v, got %v", want, got)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("want %v, got %v", want, got)
+			}
+		}
+	})
+
+	t.Run("since/until compose with the other filters", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		_ = s.Record(ctx, mk("alpha-in", "alpha", base))
+		_ = s.Record(ctx, mk("beta-in", "beta", base))
+		_ = s.Record(ctx, mk("alpha-out", "alpha", base.Add(-time.Hour)))
+
+		page, err := s.List(ctx, Query{Project: "alpha", Since: base, Until: base.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Runs) != 1 || page.Runs[0].RunID != "alpha-in" {
+			t.Fatalf("project and time-range filters together did not narrow correctly: %+v", page.Runs)
+		}
+	})
+
+	t.Run("a since/until-narrowed listing still paginates without skipping or duplicating rows", func(t *testing.T) {
+		s := newStore(t)
+		base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+		const inWindow = 5
+		var want []string
+		for i := 0; i < inWindow; i++ {
+			id := fmt.Sprintf("run-%d", i)
+			_ = s.Record(ctx, mk(id, "p", base.Add(time.Duration(i)*time.Minute)))
+			want = append(want, id)
+		}
+		// Recorded outside [since, until) -- pagination must never surface these.
+		_ = s.Record(ctx, mk("too-early", "p", base.Add(-time.Hour)))
+		_ = s.Record(ctx, mk("too-late", "p", base.Add(time.Hour)))
+
+		since, until := base, base.Add(inWindow*time.Minute)
+		var got []string
+		var cursor *Cursor
+		for {
+			page, err := s.List(ctx, Query{Project: "p", Since: since, Until: until, Limit: 2, After: cursor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, r := range page.Runs {
+				got = append(got, r.RunID)
+			}
+			if page.Next == nil {
+				break
+			}
+			cursor = page.Next
+		}
+		// Newest first.
+		wantOrdered := []string{"run-4", "run-3", "run-2", "run-1", "run-0"}
+		if len(got) != len(wantOrdered) {
+			t.Fatalf("want %v, got %v", wantOrdered, got)
+		}
+		for i := range wantOrdered {
+			if got[i] != wantOrdered[i] {
+				t.Fatalf("want %v, got %v", wantOrdered, got)
+			}
 		}
 	})
 

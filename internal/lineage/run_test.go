@@ -80,7 +80,11 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"no project":     func(r *Run) { r.Project = "" },
 		"no commit":      func(r *Run) { r.GitCommit = "" },
 		"unknown status": func(r *Run) { r.Status = "elsewhere" },
-		"backwards time": func(r *Run) { r.StartedAt = time.Now(); r.EndedAt = r.StartedAt.Add(-time.Hour) },
+		"backwards time": func(r *Run) {
+			r.StartedAt = time.Now()
+			endedAt := r.StartedAt.Add(-time.Hour)
+			r.EndedAt = &endedAt
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := base()
@@ -96,7 +100,8 @@ func TestValidateAcceptsAGoodRun(t *testing.T) {
 	r := base()
 	r.Status = StatusSucceeded
 	r.StartedAt = time.Now().Add(-time.Minute)
-	r.EndedAt = time.Now()
+	endedAt := time.Now()
+	r.EndedAt = &endedAt
 	if err := r.Validate(); err != nil {
 		t.Fatalf("valid run rejected: %v", err)
 	}
