@@ -1027,6 +1027,7 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 	var out struct {
 		Count     int  `json:"count"`
 		NoRepeats bool `json:"no_repeats"`
+		InFlight  int  `json:"in_flight"`
 		Metrics   map[string]struct {
 			Count int     `json:"count"`
 			Mean  float64 `json:"mean"`
@@ -1037,6 +1038,9 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 	}
 	if !out.NoRepeats || out.Count != 1 {
 		t.Fatalf("running run must not count as a repeat, got %+v", out)
+	}
+	if out.InFlight != 1 {
+		t.Fatalf("the running run must still be reported via in_flight, got %+v", out)
 	}
 	if loss, ok := out.Metrics["loss"]; ok {
 		t.Fatalf("running run's metric must not enter the group's stats, got %+v", loss)
@@ -1054,6 +1058,7 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 			Fingerprint string `json:"fingerprint"`
 			Count       int    `json:"count"`
 			NoRepeats   bool   `json:"no_repeats"`
+			InFlight    int    `json:"in_flight"`
 		} `json:"groups"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &list); err != nil {
@@ -1062,23 +1067,47 @@ func TestFingerprintOneIgnoresNonTerminalRuns(t *testing.T) {
 	if len(list.Groups) != 1 || list.Groups[0].Fingerprint != fp || list.Groups[0].Count != 1 || !list.Groups[0].NoRepeats {
 		t.Fatalf("want a single no_repeats group of count 1, got %+v", list.Groups)
 	}
+	if list.Groups[0].InFlight != 1 {
+		t.Fatalf("want the running run reported via in_flight, got %+v", list.Groups[0])
+	}
 }
 
-// TestFingerprintOneAllNonTerminalIs404 pins the other side of issue #23: a
-// fingerprint that exists only as a created/running run has not been
-// measured yet, so it must not be reported as a (misleadingly empty)
-// no_repeats group -- it must 404, the same as a fingerprint never seen.
-func TestFingerprintOneAllNonTerminalIs404(t *testing.T) {
+// TestFingerprintOneAllInFlightIsNoRepeatsNotNotFound pins ADR 0012's
+// revision of issue #23's other side: a fingerprint that exists only as a
+// created/running run has not been measured yet, but it does exist -- the
+// store has run records for it. It reports as a no_repeats group with
+// count 0 and in_flight set, not 404. 404 is reserved for a fingerprint no
+// run carries at all (TestFingerprintUnknownIs404); treating "exists, zero
+// finished" the same as "does not exist" would disagree with
+// GET /fingerprints?min_runs=0, which already lists this fingerprint (see
+// TestFingerprintOneIgnoresNonTerminalRuns's min_runs=1 case above for the
+// list side of that consistency requirement).
+func TestFingerprintOneAllInFlightIsNoRepeatsNotNotFound(t *testing.T) {
 	h := srv(t)
 	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"running","metrics":{"loss":3.9}}`)
 	var run map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &run)
 	fp := run["fingerprint"].(string)
+	post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","seed":1,"status":"created"}`)
 
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/v1/fingerprints/"+fp, nil))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("want 404 for a fingerprint with no finished run, got %d: %s", w.Code, w.Body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200 for a fingerprint with only in-flight runs, got %d: %s", w.Code, w.Body)
+	}
+	var out struct {
+		Count     int  `json:"count"`
+		NoRepeats bool `json:"no_repeats"`
+		InFlight  int  `json:"in_flight"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Count != 0 || !out.NoRepeats {
+		t.Fatalf("want count 0 and no_repeats true, got %+v", out)
+	}
+	if out.InFlight != 2 {
+		t.Fatalf("want both in-flight runs reported, got %+v", out)
 	}
 }
 
