@@ -120,6 +120,14 @@ from .read import API_VERSION
 
 DEFAULT_SERVER = "http://localhost:8080"
 DEFAULT_TIMEOUT = 10.0
+# Reported as capture.client (ADR 0016): "did capture regress in client
+# X.Y" needs each run to say what its own client tried, and the version
+# string is how a reader finds every run one client version recorded.
+# Duplicated from runledger.__version__ rather than imported from it:
+# __init__.py imports this module (``from ._run import ...``) before it
+# assigns __version__, so importing it back here would reach into a
+# partially-initialized package and fail. Bump both together.
+_CLIENT_VERSION = "0.1.0"
 # Left unexpanded on purpose. Expanding at import time baked the building
 # machine's home directory into the default, which then rendered as an
 # absolute path in help(), IDE tooltips, and the published pdoc page -- and,
@@ -410,6 +418,20 @@ class Run:
             "host": socket.gethostname(),
             "device": _provenance.device_name(),
             "framework_version": _provenance.framework_version(),
+            # ADR 0016: a capture declaration records what this client
+            # *tried* to capture, not what it found -- the fact that
+            # distinguishes "asked and got nothing" from "never asked",
+            # which device_name()'s own "" return can't carry on its own
+            # (see its docstring, and #66). host/device/framework_version
+            # are unconditionally attempted, immediately above, every time
+            # this payload is built -- not sometimes, depending on flags or
+            # environment the way rlctl's --device/--dataset/etc. are -- so
+            # all three always belong in attempted, regardless of whether
+            # any of them actually came back empty.
+            "capture": {
+                "client": f"runledger-py/{_CLIENT_VERSION}",
+                "attempted": ["host", "device", "framework_version"],
+            },
         }
         if self.params:
             # The wire schema's Params is map[string]string (lineage.Run) --

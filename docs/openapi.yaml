@@ -6,8 +6,10 @@ info:
     git_commit, git_dirty, config_hash, dataset_version, model_version, seed,
     params) determine a run's fingerprint; provenance fields (host, device,
     framework_version, submitter_claim, job_id, status, timestamps,
-    checkpoint_uri, metrics) record what happened without affecting it. See
-    the repository README for the full model.
+    checkpoint_uri, metrics, capture) record what happened without affecting
+    it. capture is a declaration of what the client attempted to capture, not
+    what it captured -- see ADR 0016 and the Run schema's capture
+    description. See the repository README for the full model.
   version: "1.0.0"
   license:
     name: MIT
@@ -51,6 +53,9 @@ paths:
                 lr: "3e-4"
               device: cpu
               framework_version: torch-2.3.0
+              capture:
+                client: runledger-py/0.1.0
+                attempted: [host, device, framework_version]
               status: created
       responses:
         "201":
@@ -137,6 +142,15 @@ paths:
         - name: job_id
           in: query
           description: Filter to runs whose job_id matches exactly.
+          schema:
+            type: string
+        - name: capture_client
+          in: query
+          description: >
+            Filter to runs whose capture.client matches exactly (e.g.
+            runledger-py/0.1.0) -- isolates every run one client version
+            recorded, for questions like "did capture coverage regress in
+            client X.Y". A run with no capture declaration never matches.
           schema:
             type: string
         - name: since
@@ -242,7 +256,11 @@ paths:
         {succeeded, failed, cancelled}; a terminal status cannot be left.
         Identity fields may be included only to confirm they are unchanged
         -- sending one that differs from the stored value is rejected as a
-        conflict rather than silently ignored.
+        conflict rather than silently ignored. capture is deliberately not
+        patchable: it describes what the recording client's own code tried,
+        which it already knows in full at record time, so there is no
+        legitimate "fill this in later" case the way there is for the fields
+        above (see ADR 0016).
       security:
         - bearerAuth: []
         - {}
@@ -637,6 +655,18 @@ components:
             The CI job id, Slurm job id, or other scheduler-assigned
             identifier of the job that launched this run. One generic
             field for whatever a launcher calls its own unit of work.
+        capture:
+          allOf:
+            - $ref: "#/components/schemas/CaptureDeclaration"
+          description: >
+            What the client attempted to capture when it wrote this run, not
+            what it captured -- see ADR 0016. Omitted entirely means no
+            declaration was sent at all, which is a different claim from a
+            declaration that names nothing (see CaptureDeclaration). Not
+            accepted by PATCH: a capture declaration describes what the
+            recording client's own code tried, which it already knows in
+            full at record time, so there is no legitimate "fill this in
+            later" case the way there is for host/device/job_id.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -751,6 +781,18 @@ components:
             identifier of the job that launched this run. One generic
             field for whatever a launcher calls its own unit of work. Empty
             means not recorded.
+        capture:
+          allOf:
+            - $ref: "#/components/schemas/CaptureDeclaration"
+          description: >
+            What the client attempted to capture when it wrote this run, not
+            what it captured -- a fact about the recording process, never
+            hashed into fingerprint. Absent means no client ever sent a
+            declaration for this run (every run recorded before this field
+            existed, or a client that doesn't populate it) -- a different
+            claim from a declaration present but naming nothing, which is
+            why this is omitted rather than defaulted to an empty object.
+            See ADR 0016.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -767,6 +809,42 @@ components:
           additionalProperties:
             type: number
             format: double
+
+    # ADR 0016: "did the client try to capture X" is a fact about the
+    # recording process, not a value the experiment can take, so a nullable
+    # value field can't hold it -- CaptureDeclaration is a small object kept
+    # alongside the run for exactly that fact, and is never hashed.
+    CaptureDeclaration:
+      type: object
+      additionalProperties: false
+      properties:
+        client:
+          type: string
+          description: >
+            The client library and version that produced this declaration
+            (e.g. runledger-py/0.1.0), so "did capture regress in client
+            X.Y" is answerable directly from stored runs. Self-asserted the
+            same way host and device already are.
+        attempted:
+          type: array
+          items:
+            type: string
+            enum:
+              - config_hash
+              - dataset_version
+              - model_version
+              - host
+              - device
+              - framework_version
+              - checkpoint_uri
+          description: >
+            Which of the seven fields ADR 0011 gives "" a single meaning for
+            this client's recording code actively tried to determine,
+            regardless of whether the attempt succeeded. A field's absence
+            here means the client never looks for it at all -- distinct from
+            looking and finding nothing, which is that field present here
+            with an empty value on the run itself. Unrecognized names are
+            rejected the same way an unrecognized status is.
 
     RunPatch:
       type: object

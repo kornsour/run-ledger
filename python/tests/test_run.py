@@ -298,9 +298,53 @@ class RunRecordingTests(unittest.TestCase):
         self.assertEqual(finish_call["path"], "/v1/runs/fake-run-id")
         self.assertEqual(finish_call["payload"]["status"], "succeeded")
         self.assertEqual(finish_call["payload"]["metrics"], {"loss": 0.5, "acc": 0.8})
+
+    def test_start_payload_declares_capture(self):
+        # ADR 0016: the client reports what it attempted to capture, not
+        # just what it captured -- this pins the exact declaration
+        # runledger-py sends. host/device/framework_version are
+        # unconditionally attempted by this client (see
+        # _identity_and_provenance's comment), exactly the issue's own
+        # worked example.
+        with _clean_git(), _FakeLedger() as ledger:
+            with runledger.Run.start(project="demo", server=ledger.addr):
+                pass
+
+        self.assertEqual(len(ledger.received), 2)
+        start_call, finish_call = ledger.received
+        capture = start_call["payload"]["capture"]
+        self.assertEqual(capture["client"], f"runledger-py/{runledger.__version__}")
+        self.assertEqual(
+            sorted(capture["attempted"]), ["device", "framework_version", "host"]
+        )
+        # The terminal PATCH carries only what changed (status, ended_at,
+        # metrics) -- capture is not patchable (ADR 0016: the client already
+        # knows its own capture behaviour in full at record time, so there
+        # is no "fill this in later" case to support), and this client
+        # never tries to send it there.
+        self.assertNotIn("capture", finish_call["payload"])
         self.assertIn("ended_at", finish_call["payload"])
         self.assertNotIn(
             "project", finish_call["payload"], "PATCH only carries what changed"
+        )
+
+    def test_fallback_full_record_also_declares_capture(self):
+        # When the start-time POST never lands, _record_whole_run() sends
+        # one full POST built from the same _identity_and_provenance() --
+        # the fallback path must declare capture too, not just the common
+        # case.
+        with _clean_git(), _FakeLedger() as ledger:
+            with mock.patch.object(
+                run_module.Run, "_record_start", lambda self: None
+            ):
+                with runledger.Run.start(project="demo", server=ledger.addr):
+                    pass
+
+        self.assertEqual(len(ledger.received), 1, "no start-time POST landed, so one fallback POST")
+        capture = ledger.received[0]["payload"]["capture"]
+        self.assertEqual(capture["client"], f"runledger-py/{runledger.__version__}")
+        self.assertEqual(
+            sorted(capture["attempted"]), ["device", "framework_version", "host"]
         )
 
     def test_failure_records_failed_with_partial_metrics_and_reraises(self):
