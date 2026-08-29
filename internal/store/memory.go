@@ -83,6 +83,12 @@ func (m *Memory) List(_ context.Context, q Query) (Page, error) {
 		if q.Device != "" && r.Device != q.Device {
 			continue
 		}
+		if q.SubmitterClaim != "" && r.SubmitterClaim != q.SubmitterClaim {
+			continue
+		}
+		if q.JobID != "" && r.JobID != q.JobID {
+			continue
+		}
 		if !q.Since.IsZero() && r.StartedAt.Before(q.Since) {
 			continue
 		}

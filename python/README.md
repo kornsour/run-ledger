@@ -21,8 +21,19 @@ import runledger
 with runledger.Run.start(project="demo", seed=1, params={"lr": 3e-4}) as run:
     for step in range(steps):
         loss = train_step()
-        run.log_metric("loss", loss)
+        run.log_metric("loss", loss)  # overwrites -- only the final value is kept
 ```
+
+**This is not a metric tracker.** `Run` stores what a run **was** — identity
+plus a final outcome, for deciding whether two runs were the same
+experiment — not how a run **went**. `log_metric` overwrites, so calling it
+every step, as above, is fine to write but does not build a curve; the
+record keeps whichever call happened last for each name. If you want the
+curve, log it to a tracker (W&B, MLflow, TensorBoard) the same step you call
+`log_metric` here — most training setups want both, and they answer
+different questions: a metric belongs in the fingerprint's neighborhood only
+if it is the final number you'd use to decide whether this run reproduced;
+everything you want to watch move over time belongs on a dashboard instead.
 
 > **Run this from inside a git checkout.** `Run.start()` captures the commit
 > before the `with` body runs and raises `runledger.NoGitCommitError` if there
@@ -334,6 +345,43 @@ are captured automatically — `framework_version` becomes e.g. `"torch
 2.4.0"`, and `device` becomes the CUDA device name or JAX device string.
 Neither is required; a run with neither installed records `device="cpu"`
 and an empty `framework_version`.
+
+## Deriving `dataset_version`
+
+`dataset_version` is a free string — the server hashes it into the
+fingerprint exactly as given and has no way to check that two runs labelled
+the same string actually saw the same bytes (see the root README's note on
+what that costs the `unattributable` verdict). `hash_dataset()` lets a
+caller who wants the label to mean something derive it from the data
+instead of typing it:
+
+```python
+import runledger
+
+digest = runledger.hash_dataset("data/train")  # hex sha256, deterministic
+
+with runledger.Run.start(project="demo", seed=1, dataset_version=digest) as run:
+    ...
+```
+
+It hashes a manifest of `(relative path, size, content digest)` per file,
+sorted by path — so the result does not depend on directory listing order,
+the machine it runs on, or where the tree happens to live on disk.
+Deliberately excluded: absolute paths, mtimes, and permissions, none of
+which are the data and all of which change on a plain copy or checkout
+without the bytes changing. An empty directory hashes to a fixed, defined
+value rather than raising; a missing path raises `FileNotFoundError`; a
+symlink anywhere in the tree raises `SymlinkNotSupportedError` rather than
+guessing whether the manifest should describe the link or whatever it
+currently resolves to. Files are hashed streaming, in chunks (`chunk_size=`,
+default 1 MiB), so a multi-gigabyte file never has to fit in memory at once.
+
+This is entirely client-side and opt-in: the server goes on storing
+whatever string it is given as `dataset_version`, unchanged. Nothing about
+the wire schema or the fingerprint contract
+([ADR 0004](../docs/adr/0004-fingerprint-input-is-a-versioned-contract.md))
+is affected — `hash_dataset()` just gives a caller a principled way to
+produce that string instead of typing `"v1"` by hand.
 
 ## Reference
 

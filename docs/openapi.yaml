@@ -5,9 +5,9 @@ info:
     Content-addressed ledger for experiment runs. Identity fields (project,
     git_commit, git_dirty, config_hash, dataset_version, model_version, seed,
     params) determine a run's fingerprint; provenance fields (host, device,
-    framework_version, status, timestamps, checkpoint_uri, metrics) record
-    what happened without affecting it. See the repository README for the
-    full model.
+    framework_version, submitter_claim, job_id, status, timestamps,
+    checkpoint_uri, metrics) record what happened without affecting it. See
+    the repository README for the full model.
   version: "1.0.0"
   license:
     name: MIT
@@ -124,6 +124,21 @@ paths:
           in: query
           schema:
             type: string
+        - name: submitter_claim
+          in: query
+          description: >
+            Filter to runs whose submitter_claim matches exactly. This is
+            self-asserted, not attested (see the Run schema's
+            submitter_claim description) -- filtering by it finds runs a
+            caller claimed as theirs, not runs cryptographically proven to
+            be theirs.
+          schema:
+            type: string
+        - name: job_id
+          in: query
+          description: Filter to runs whose job_id matches exactly.
+          schema:
+            type: string
         - name: since
           in: query
           description: >
@@ -222,12 +237,12 @@ paths:
       summary: Update a run's provenance
       description: >
         Moves a run's provenance forward: status, ended_at, checkpoint_uri,
-        metrics, host, device, framework_version. Status transitions are
-        restricted to created -> running -> {succeeded, failed, cancelled};
-        a terminal status cannot be left. Identity fields may be included
-        only to confirm they are unchanged -- sending one that differs from
-        the stored value is rejected as a conflict rather than silently
-        ignored.
+        metrics, host, device, framework_version, submitter_claim, job_id.
+        Status transitions are restricted to created -> running ->
+        {succeeded, failed, cancelled}; a terminal status cannot be left.
+        Identity fields may be included only to confirm they are unchanged
+        -- sending one that differs from the stored value is rejected as a
+        conflict rather than silently ignored.
       security:
         - bearerAuth: []
         - {}
@@ -359,8 +374,8 @@ paths:
         rather than silently ignored. Only terminal runs (succeeded, failed,
         cancelled) count toward a fingerprint's group or its min_runs
         threshold -- a created or running run has not produced a finished
-        measurement yet, so it is excluded rather than being counted as a
-        repeat.
+        measurement yet, so it does not count as a repeat, but it is not
+        dropped either: it is reported on the group's in_flight count.
       security:
         - bearerAuth: []
         - {}
@@ -437,9 +452,13 @@ paths:
       responses:
         "200":
           description: >
-            The spread group for this fingerprint, including no_repeats for
-            a lone run. Only terminal runs (succeeded, failed, cancelled)
-            count -- a created or running run is not a finished measurement.
+            The spread group for this fingerprint, including no_repeats when
+            fewer than two terminal runs share it -- which includes a
+            fingerprint whose only runs are still created or running:
+            count 0, no_repeats true, in_flight set. Only terminal runs
+            (succeeded, failed, cancelled) count toward count, metrics, and
+            provenance; a created or running run is not a finished
+            measurement, so it is reported only via in_flight.
           content:
             application/json:
               schema:
@@ -452,9 +471,11 @@ paths:
                 $ref: "#/components/schemas/Error"
         "404":
           description: >
-            No finished (terminal-status) run recorded with this
-            fingerprint -- including when every run recorded under it is
-            still created or running.
+            No run at all -- of any status -- recorded with this
+            fingerprint. A fingerprint that has at least one run, even a
+            still-running one with no finished measurement yet, is a 200
+            (see above), for consistency with GET /v1/fingerprints's
+            min_runs=0 listing it.
           content:
             application/json:
               schema:
@@ -588,12 +609,34 @@ components:
             the server always overwrites it with the identity fields' own
             computed hash. There is no way to assert a fingerprint from the
             client.
+        fingerprint_version:
+          type: integer
+          description: >
+            Accepted but ignored, the same as fingerprint: the server always
+            overwrites it with the version of the hashing contract that
+            actually produced the fingerprint it just computed. There is no
+            way to assert an old contract's fingerprint was produced by
+            today's.
         host:
           type: string
         device:
           type: string
         framework_version:
           type: string
+        submitter_claim:
+          type: string
+          description: >
+            The human or service account the caller says recorded this run.
+            Self-asserted, not attested: the server has no per-caller
+            identity to check this against (RUNLEDGER_TOKEN is one shared
+            secret today). Treat it as a claim, not a verified fact. See
+            ADR 0015.
+        job_id:
+          type: string
+          description: >
+            The CI job id, Slurm job id, or other scheduler-assigned
+            identifier of the job that launched this run. One generic
+            field for whatever a launcher calls its own unit of work.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -634,9 +677,12 @@ components:
         - seed
         - run_id
         - fingerprint
+        - fingerprint_version
         - host
         - device
         - framework_version
+        - submitter_claim
+        - job_id
         - status
         - started_at
       properties:
@@ -668,12 +714,43 @@ components:
           type: string
           readOnly: true
           description: Content-addressed hash of the identity fields, computed by the server.
+        fingerprint_version:
+          type: integer
+          readOnly: true
+          description: >
+            Which version of the fingerprint hashing contract produced
+            fingerprint -- see the fingerprint-input-is-a-versioned-contract
+            and param-normalization ADRs. 1 identifies a run recorded before
+            params were normalized before hashing: its fingerprint hashes
+            each param's literal string spelling, so "3e-4" and "0.0003"
+            fingerprinted as different experiments. 2 identifies a run
+            recorded after: a param value that parses as a finite decimal
+            number is normalized to a canonical spelling before hashing, so
+            those two spellings fingerprint identically. A version-1
+            fingerprint is never recomputed under the version-2 contract --
+            it keeps meaning exactly what it meant when it was recorded.
         host:
           type: string
         device:
           type: string
         framework_version:
           type: string
+        submitter_claim:
+          type: string
+          description: >
+            The human or service account the caller says recorded this run.
+            Self-asserted, not attested: the server has no per-caller
+            identity to check this against (RUNLEDGER_TOKEN is one shared
+            secret today). Treat it as a claim, not a verified fact. Empty
+            means not recorded, the same rule ADR 0011 states for the other
+            scalar provenance fields. See ADR 0015.
+        job_id:
+          type: string
+          description: >
+            The CI job id, Slurm job id, or other scheduler-assigned
+            identifier of the job that launched this run. One generic
+            field for whatever a launcher calls its own unit of work. Empty
+            means not recorded.
         status:
           $ref: "#/components/schemas/Status"
         started_at:
@@ -734,6 +811,14 @@ components:
         device:
           type: string
         framework_version:
+          type: string
+        submitter_claim:
+          type: string
+          description: >
+            Self-asserted, like the same field on RunInput/Run -- see ADR
+            0015. Patchable because a run is often recorded before every
+            provenance fact about it is known.
+        job_id:
           type: string
         metrics:
           type: object
@@ -834,7 +919,7 @@ components:
 
     SpreadGroup:
       type: object
-      required: [fingerprint, run_ids, count, no_repeats]
+      required: [fingerprint, run_ids, count, no_repeats, in_flight]
       properties:
         fingerprint:
           type: string
@@ -842,11 +927,22 @@ components:
           type: array
           items:
             type: string
+          description: >
+            Terminal (succeeded, failed, cancelled) runs only -- an
+            in-flight run is counted in in_flight, not listed here.
         count:
           type: integer
+          description: Number of terminal runs with this fingerprint.
         no_repeats:
           type: boolean
-          description: True when exactly one run has this fingerprint; metrics is omitted in that case.
+          description: True when fewer than two terminal runs have this fingerprint; metrics is omitted in that case.
+        in_flight:
+          type: integer
+          description: >
+            Number of this fingerprint's runs that are not yet terminal
+            (created or running). Reported so a run still in progress is
+            visible rather than either silently dropped or miscounted as a
+            finished repeat.
         metrics:
           type: object
           additionalProperties:

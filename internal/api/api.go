@@ -399,6 +399,16 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	// The server computes the fingerprint; a client-supplied one would let a
 	// caller assert that two different experiments were the same.
 	run.Fingerprint = run.Compute()
+	// FingerprintVersion is stamped in the same breath as Fingerprint, never
+	// independently: Compute always implements CurrentFingerprintVersion
+	// (see lineage.Run.Compute's doc and ADR 0013), so any Fingerprint this
+	// line just produced is, by construction, a CurrentFingerprintVersion
+	// fingerprint. A client-supplied fingerprint_version is discarded the
+	// same way a client-supplied fingerprint is -- ADR 0001's rule ("the
+	// server computes the fingerprint, never the client") covers the
+	// version tag too, or a client could claim an old, unnormalized
+	// fingerprint was produced under today's contract.
+	run.FingerprintVersion = lineage.CurrentFingerprintVersion
 	if run.RunID == "" {
 		// started_at is client-supplied, so two legitimate repeats of the same
 		// experiment sharing a coarse timestamp (e.g. a scheduler emitting
@@ -457,6 +467,8 @@ type patchRequest struct {
 	Host             *string            `json:"host"`
 	Device           *string            `json:"device"`
 	FrameworkVersion *string            `json:"framework_version"`
+	SubmitterClaim   *string            `json:"submitter_claim"`
+	JobID            *string            `json:"job_id"`
 	Metrics          map[string]float64 `json:"metrics"`
 }
 
@@ -478,6 +490,7 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		ModelVersion: req.ModelVersion, Seed: req.Seed, Params: req.Params,
 		Status: req.Status, EndedAt: req.EndedAt, CheckpointURI: req.CheckpointURI,
 		Host: req.Host, Device: req.Device, FrameworkVersion: req.FrameworkVersion,
+		SubmitterClaim: req.SubmitterClaim, JobID: req.JobID,
 		Metrics: req.Metrics,
 	}
 	run, err := s.store.Update(r.Context(), r.PathValue("id"), p)
@@ -540,6 +553,10 @@ var listQueryParams = map[string]bool{
 	"project": true, "git_commit": true, "fingerprint": true,
 	"status": true, "device": true, "limit": true, "cursor": true,
 	"since": true, "until": true,
+	// submitter_claim and job_id: the "filter GET /v1/runs to your own
+	// runs" workflow #67 exists for, consistent with the existing
+	// provenance filter (device) rather than a new mechanism.
+	"submitter_claim": true, "job_id": true,
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -580,15 +597,17 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page, err := s.store.List(r.Context(), store.Query{
-		Project:     q.Get("project"),
-		GitCommit:   q.Get("git_commit"),
-		Fingerprint: q.Get("fingerprint"),
-		Status:      status,
-		Device:      q.Get("device"),
-		Limit:       limit,
-		After:       after,
-		Since:       since,
-		Until:       until,
+		Project:        q.Get("project"),
+		GitCommit:      q.Get("git_commit"),
+		Fingerprint:    q.Get("fingerprint"),
+		Status:         status,
+		Device:         q.Get("device"),
+		SubmitterClaim: q.Get("submitter_claim"),
+		JobID:          q.Get("job_id"),
+		Limit:          limit,
+		After:          after,
+		Since:          since,
+		Until:          until,
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
@@ -711,6 +730,11 @@ func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
 
 	// Limit: 0 is intentionally unbounded here -- spread has to see every
 	// run for a fingerprint to report its true spread, not just one page.
+	//
+	// page.Runs is not pre-filtered by status: spread.Compute does that
+	// itself (via spread.One, per group), so this endpoint and spreadOne
+	// below share one filtering decision instead of each remembering to
+	// apply it.
 	page, err := s.store.List(r.Context(), store.Query{Project: q.Get("project")})
 	if err != nil {
 		s.metrics.StoreError("internal")
@@ -719,8 +743,13 @@ func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
 	}
 	// A nil slice serializes as JSON null; an empty result must still come
 	// back as [], the same rule list already follows via page.Runs.
+	//
+	// min_runs still compares against g.Count, which counts only terminal
+	// runs -- a fingerprint with one finished run and three still running
+	// must not pass min_runs=2 on the strength of runs that have not
+	// produced a measurement yet.
 	groups := []spread.Group{}
-	for _, g := range spread.Compute(terminalRuns(page.Runs)) {
+	for _, g := range spread.Compute(page.Runs) {
 		if g.Count >= minRuns {
 			groups = append(groups, g)
 		}
@@ -810,7 +839,18 @@ func decodeSpreadCursor(s string) (string, error) {
 
 // spreadOne answers "how much do this experiment's own repeats vary?" for
 // one fingerprint, including a group of size one -- reported as no repeats
-// rather than a misleadingly perfect standard deviation of zero.
+// rather than a misleadingly perfect standard deviation of zero -- and a
+// group made up entirely of in-flight runs, reported as no repeats with
+// Count 0 and InFlight set rather than 404.
+//
+// That last case used to 404 (issue #23): a fingerprint with no terminal
+// run had, in that reading, nothing to report. ADR 0012 changes it, for
+// consistency with spreadList -- a min_runs=0 request there already lists a
+// fingerprint the moment any run carries it, terminal or not, so an item
+// lookup that instead claims the same fingerprint does not exist is the
+// "two disagreeing notions of the fingerprints" spreadList's own min_runs
+// doc comment already treats as a bug. 404 remains reserved for a
+// fingerprint no stored run carries at all.
 func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 	fp := r.PathValue("fingerprint")
 	page, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
@@ -819,29 +859,12 @@ func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
-	runs := terminalRuns(page.Runs)
-	if len(runs) == 0 {
+	if len(page.Runs) == 0 {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no finished run recorded with fingerprint %q", fp))
+		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no run recorded with fingerprint %q", fp))
 		return
 	}
-	writeJSON(w, http.StatusOK, spread.One(fp, runs))
-}
-
-// terminalRuns filters to the runs whose status is terminal -- succeeded,
-// failed, or cancelled. A running or created run carries whatever metrics
-// happen to be logged so far, not a finished measurement: counting it toward
-// a fingerprint's spread would let an in-flight run masquerade as a repeat,
-// join a group's min/max/mean/stddev with a mid-run value, and even outrank
-// genuinely divergent experiments on Group.Widest(). See ADR 0005.
-func terminalRuns(runs []lineage.Run) []lineage.Run {
-	out := make([]lineage.Run, 0, len(runs))
-	for _, r := range runs {
-		if lineage.Terminal(r.Status) {
-			out = append(out, r)
-		}
-	}
-	return out
+	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
 }
 
 // parseLimit resolves the effective page size for GET /runs: DefaultListLimit
