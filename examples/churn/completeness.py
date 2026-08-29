@@ -7,9 +7,16 @@ schema change and no new field: compare a run against its peers.
 
 The reasoning
 -------------
-A lineage record has no way to distinguish "this run genuinely had no
-dataset version" from "the client forgot to send one" -- both arrive as the
-empty string. Intent is unrecoverable from a single record.
+ADR 0011 settled what an empty value means: for these fields "" and "not
+recorded" are the same claim, because none of them has a meaningful empty
+value. So "was this captured?" is now answerable exactly -- an empty field
+was not captured, full stop.
+
+What stays unanswerable from a single record is *why*: whether this run
+genuinely had no dataset version, or the client that submitted it failed
+to send one. That is a fact about the recording process rather than about
+the experiment, and no amount of widening the field's type would recover
+it.
 
 Across a *project*, though, it is recoverable statistically. If 11 of 12
 runs in a project record `framework_version` and one does not, the odds that
@@ -38,9 +45,10 @@ from __future__ import annotations
 import statistics
 from typing import Any, Dict, List, Sequence
 
-# The six fields where "" and "not recorded" are indistinguishable on the
-# wire. Identity fields are marked because a missing one is strictly worse:
-# it silently changes what experiment the run is recorded as being.
+# The six fields where an empty value means "not recorded" (ADR 0011) and
+# a client is therefore capable of silently omitting one. Identity fields
+# are marked because a gap there is worse: it changes which experiment the
+# run is grouped with, not just how well it is described.
 CAPTURABLE = [
     ("config_hash", "identity"),
     ("dataset_version", "identity"),

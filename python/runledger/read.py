@@ -267,6 +267,13 @@ def compare(
     true when the runs are the same experiment (``same_experiment``) but
     still measured differently, so nothing in the record explains the gap.
 
+    A field's ``a`` and ``b`` are ``None`` when that run did not record the
+    field, and ``""`` when it recorded an empty value. Only a param can be
+    the latter: for the scalar fields an empty string is not a meaningful
+    value, so it is reported as ``None`` (ADR 0011). Rendering the two the
+    same way loses the distinction -- ``runledger_dashboard.diff_cell``
+    shows one way to keep it.
+
     :raises RunNotFoundError: if ``a`` or ``b`` matches no recorded run. The
         message names which one -- the server distinguishes them.
     :raises LedgerUnreachableError: if the ledger cannot be reached.

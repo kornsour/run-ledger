@@ -301,7 +301,24 @@ have to be true to revisit each one — lives in [`docs/adr/`](docs/adr/).
   not replaced, so a long run can report as it goes; re-reporting an existing
   key overwrites just that key.
 - **An absent metric is not a zero.** They print differently and diff
-  differently.
+  differently. The same rule now holds for an absent param: `{}` and
+  `{"foo": ""}` fingerprint differently, because `Compute` hashes only the
+  keys present, so the diff reports the two sides distinctly rather than
+  reading both through a map index that yields `""` for a missing key.
+- **For the scalar fields, an empty string *means* "not recorded".**
+  `config_hash`, `dataset_version`, `model_version`, `host`, `device`,
+  `framework_version`, and `checkpoint_uri` have no meaningful empty value,
+  so `""` is one spelling of absence rather than a distinction the record
+  failed to capture. That keeps the fields as plain strings, leaves the
+  fingerprint contract untouched, and stops a client that switches from
+  sending `""` to omitting a key from silently changing every fingerprint
+  it produces. `params` is exempt — presence there is real and already
+  hashed. ([ADR 0011](docs/adr/0011-empty-string-means-not-recorded.md))
+- **A comparison reads the stored fingerprint, not a fresh one.** Recomputing
+  it in `compare` gave a second, independent answer to the question
+  `spread` already answers from the stored value. The two agree only while
+  `Compute` never changes, and [ADR 0004](docs/adr/0004-fingerprint-input-is-a-versioned-contract.md)
+  exists because one day it will.
 - **Hashed fields are length-prefixed** so `("ab","c")` and `("a","bc")` cannot
   collide, and **params are sorted before hashing** because Go randomizes map
   iteration — without that, the same experiment fingerprints differently between

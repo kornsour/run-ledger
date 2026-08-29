@@ -22,6 +22,7 @@ section is a summary of these; this folder is the account.
 | [0008](0008-replay-raises-quarantines-and-tracks-a-read-offset.md) | `replay_spool()` raises on an unreachable ledger, quarantines permanent rejections, and rewrites the spool by tracked read offset | Accepted |
 | [0009](0009-url-path-versioning-for-the-http-api.md) | URL path versioning (`/v1`) for the HTTP API, excluding health/readiness/metrics | Accepted |
 | [0010](0010-comparisons-is-a-resource-not-a-verb.md) | `/comparisons` is a resource, not a verb | Accepted |
+| [0011](0011-empty-string-means-not-recorded.md) | An empty string means "not recorded" | Accepted |
 
 ## Adding a record
 
