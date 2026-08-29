@@ -125,7 +125,13 @@ Or read it already executed, without installing anything:
 **https://kornsour.github.io/run-ledger/reproducibility.html**
 
 It is committed with outputs stripped and executed on every deploy, so the
-published version always reflects a run that actually happened. Same git
+published version always reflects a run that actually happened.
+
+If you add a cell that draws a plot, put an `alt_text` entry in that cell's
+metadata describing what the image *shows*. nbconvert emits no `alt`
+attribute for output images and papers over the gap with a hardcoded "No
+description has been provided for this image"; `make notebook` substitutes
+what you declared, and fails the build if a plot has nothing to substitute. Same git
 precondition as everything else here — it needs a checkout, so Colab will not
 work.
 

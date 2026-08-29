@@ -120,6 +120,8 @@ internal/compare/  structured diff, identity vs provenance vs metric
 internal/spread/   per-fingerprint metric spread across repeated runs
 internal/api/      HTTP handlers
 python/runledger/  Python client: `Run.start()` to record, runs()/spread() to read back
+python/examples/   the worked reproducibility notebook
+scripts/           docs build helpers used by `make docs`
 ```
 
 Every directory here contains code. The store is an interface with a conformance

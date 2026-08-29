@@ -60,6 +60,12 @@ notebook: build
 		kill $$(cat /tmp/runledger-docs.pid) 2>/dev/null; \
 		rm -f /tmp/runledger-docs.pid; \
 		exit $$status
+	@# nbconvert warns "Alternative text is missing" and fills in a hardcoded
+	@# placeholder that tells a screen-reader user nothing. Its own warning is
+	@# therefore expected above; this step is what actually resolves it, and
+	@# fails the build if any image lacks a description.
+	python3 scripts/apply_alt_text.py \
+		python/examples/reproducibility.ipynb docs/reproducibility.html
 
 clean:
 	rm -rf bin coverage.out docs/reproducibility.html docs/python

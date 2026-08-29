@@ -56,6 +56,37 @@ class NotebookHygieneTests(unittest.TestCase):
         missing = [i for i, c in enumerate(self.nb["cells"]) if not c.get("id")]
         self.assertEqual(missing, [], f"cells {missing} are missing an id field")
 
+    def test_every_plotting_cell_declares_alt_text(self):
+        # nbconvert emits no alt attribute for output images and papers over
+        # it with a hardcoded placeholder, so a plot with no declared
+        # description ships as "No description has been provided for this
+        # image". scripts/apply_alt_text.py substitutes what is declared
+        # here; this makes sure something is.
+        undescribed = [
+            i
+            for i, c in enumerate(self.nb["cells"])
+            if c["cell_type"] == "code"
+            and "plt." in "".join(c["source"])
+            and not c["metadata"].get("alt_text")
+        ]
+        self.assertEqual(
+            undescribed,
+            [],
+            f"cells {undescribed} render a plot with no alt_text in their "
+            "metadata; a screen reader gets nothing from them",
+        )
+
+    def test_declared_alt_text_is_a_description_not_a_label(self):
+        for i, c in enumerate(self.nb["cells"]):
+            alt = c.get("metadata", {}).get("alt_text")
+            if not alt:
+                continue
+            # "loss plot" satisfies a linter and helps nobody.
+            self.assertGreater(
+                len(alt.split()), 12,
+                f"cell {i}'s alt_text is too short to describe what the image shows",
+            )
+
     def test_uses_the_public_api_only(self):
         # The notebook is also the client's worked example: if it reaches for
         # a private helper, the public surface is missing something.
