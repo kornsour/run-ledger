@@ -17,6 +17,11 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  # A squash-merge performed here still needs to close issues a PR body
+  # references with "Fixes #N" -- that's authorized against this token's own
+  # permissions, not just the merging user's, so without this the linked
+  # issue is left open even though the fix landed on main.
+  issues: write
 
 jobs:
   auto-merge:
