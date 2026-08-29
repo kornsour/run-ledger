@@ -588,6 +588,14 @@ components:
             the server always overwrites it with the identity fields' own
             computed hash. There is no way to assert a fingerprint from the
             client.
+        fingerprint_version:
+          type: integer
+          description: >
+            Accepted but ignored, the same as fingerprint: the server always
+            overwrites it with the version of the hashing contract that
+            actually produced the fingerprint it just computed. There is no
+            way to assert an old contract's fingerprint was produced by
+            today's.
         host:
           type: string
         device:
@@ -634,6 +642,7 @@ components:
         - seed
         - run_id
         - fingerprint
+        - fingerprint_version
         - host
         - device
         - framework_version
@@ -668,6 +677,21 @@ components:
           type: string
           readOnly: true
           description: Content-addressed hash of the identity fields, computed by the server.
+        fingerprint_version:
+          type: integer
+          readOnly: true
+          description: >
+            Which version of the fingerprint hashing contract produced
+            fingerprint -- see the fingerprint-input-is-a-versioned-contract
+            and param-normalization ADRs. 1 identifies a run recorded before
+            params were normalized before hashing: its fingerprint hashes
+            each param's literal string spelling, so "3e-4" and "0.0003"
+            fingerprinted as different experiments. 2 identifies a run
+            recorded after: a param value that parses as a finite decimal
+            number is normalized to a canonical spelling before hashing, so
+            those two spellings fingerprint identically. A version-1
+            fingerprint is never recomputed under the version-2 contract --
+            it keeps meaning exactly what it meant when it was recorded.
         host:
           type: string
         device:

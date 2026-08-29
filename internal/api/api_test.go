@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kornsour/run-ledger/internal/lineage"
 	"github.com/kornsour/run-ledger/internal/metrics"
 	"github.com/kornsour/run-ledger/internal/store"
 )
@@ -67,6 +68,62 @@ func TestClientCannotDictateTheFingerprint(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &got)
 	if got["fingerprint"] == "deadbeef" {
 		t.Fatal("server accepted a client-supplied fingerprint")
+	}
+}
+
+// TestRecordStampsCurrentFingerprintVersion pins the pairing api.record
+// makes: whatever Fingerprint a fresh record gets, it must be tagged with
+// the contract version that actually produced it (ADR 0012), not left at
+// the Go zero value or some other stale version.
+func TestRecordStampsCurrentFingerprintVersion(t *testing.T) {
+	w := post(t, srv(t), `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	fv, ok := got["fingerprint_version"].(float64) // JSON numbers decode as float64
+	if !ok || int(fv) != lineage.CurrentFingerprintVersion {
+		t.Fatalf("want fingerprint_version %d, got %v", lineage.CurrentFingerprintVersion, got["fingerprint_version"])
+	}
+}
+
+// TestClientCannotDictateTheFingerprintVersion mirrors
+// TestClientCannotDictateTheFingerprint: a client-supplied fingerprint_version
+// must be discarded the same way a client-supplied fingerprint is, or a
+// caller could claim an old, unnormalized fingerprint was produced under
+// today's contract.
+func TestClientCannotDictateTheFingerprintVersion(t *testing.T) {
+	w := post(t, srv(t), `{"project":"p","git_commit":"abc","config_hash":"cfg","fingerprint_version":1}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	fv, ok := got["fingerprint_version"].(float64)
+	if !ok || int(fv) != lineage.CurrentFingerprintVersion {
+		t.Fatalf("server accepted a client-supplied fingerprint_version: got %v, want %d", got["fingerprint_version"], lineage.CurrentFingerprintVersion)
+	}
+}
+
+// TestRecordNormalizesNumericParamSpellings is the end-to-end version of
+// lineage.TestComputeCollapsesEquivalentNumericSpellings: it exercises the
+// same normalization through the actual HTTP handler, which is what closes
+// the gap issue #63 describes -- rlctl sending a literal "3e-4" and the
+// Python client sending str(3e-4) == "0.0003" must record the same
+// fingerprint, or the two clients keep disagreeing about identical runs.
+func TestRecordNormalizesNumericParamSpellings(t *testing.T) {
+	h := srv(t)
+	rlctlStyle := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","params":{"lr":"3e-4"}}`)
+	pythonStyle := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg","params":{"lr":"0.0003"}}`)
+	if rlctlStyle.Code != http.StatusCreated || pythonStyle.Code != http.StatusCreated {
+		t.Fatalf("want both 201, got %d and %d", rlctlStyle.Code, pythonStyle.Code)
+	}
+	var a, b map[string]any
+	_ = json.Unmarshal(rlctlStyle.Body.Bytes(), &a)
+	_ = json.Unmarshal(pythonStyle.Body.Bytes(), &b)
+	if a["fingerprint"] == "" || a["fingerprint"] != b["fingerprint"] {
+		t.Fatalf(`lr="3e-4" and lr="0.0003" must record the same fingerprint, got %v and %v`, a["fingerprint"], b["fingerprint"])
 	}
 }
 
