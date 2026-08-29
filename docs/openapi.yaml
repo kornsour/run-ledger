@@ -771,8 +771,17 @@ components:
           enum: [identity, provenance, metric]
         a:
           type: string
+          nullable: true
+          description: >
+            The first run's value, or null if the run did not record this
+            field. Null and "" are different answers: null means the field
+            was never set, "" means it was set to the empty string. Only a
+            param can be the latter -- for the scalar fields an empty value
+            is not meaningful, so it is reported as null. See ADR 0011.
         b:
           type: string
+          nullable: true
+          description: The second run's value, on the same terms as `a`.
 
     CompareResult:
       type: object
