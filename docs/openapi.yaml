@@ -603,3 +603,17 @@ components:
       properties:
         error:
           type: string
+        code:
+          type: string
+          description: >
+            A stable, machine-readable identifier for the failure, distinct
+            from the human-readable error string above -- e.g.
+            identity_conflict, illegal_transition, id_taken, unknown_status,
+            not_found, invalid_cursor, bad_request, unauthenticated. New
+            codes may be added over time; a client should treat one it does
+            not recognize as it would any other error.
+        request_id:
+          type: string
+          description: >
+            Echoes the X-Request-Id response header, so a report referencing
+            one also identifies the other.

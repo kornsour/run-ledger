@@ -699,6 +699,85 @@ func TestUpdateRejectsChangeToTerminalRun(t *testing.T) {
 	}
 }
 
+func errBody(t *testing.T, w *httptest.ResponseRecorder) map[string]string {
+	t.Helper()
+	var got map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("error body did not decode as JSON: %v: %s", err, w.Body)
+	}
+	return got
+}
+
+func TestUpdateIdentityConflictHasSpecificCode(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"git_commit":"different"}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "identity_conflict" {
+		t.Fatalf("want code identity_conflict, got %q: %s", got["code"], w.Body)
+	}
+}
+
+func TestUpdateIllegalTransitionHasSpecificCode(t *testing.T) {
+	h := srv(t)
+	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`) // starts at "created"
+	var created map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	id := created["run_id"].(string)
+
+	w = patch(t, h, id, `{"status":"succeeded"}`) // created -> succeeded skips running
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "illegal_transition" {
+		t.Fatalf("want code illegal_transition, got %q: %s", got["code"], w.Body)
+	}
+}
+
+func TestRecordIDTakenHasSpecificCode(t *testing.T) {
+	h := srv(t)
+	body := `{"project":"p","git_commit":"abc","config_hash":"cfg","run_id":"fixed-id"}`
+	post(t, h, body) // first record succeeds
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/runs",
+		strings.NewReader(`{"project":"p","git_commit":"other","config_hash":"cfg","run_id":"fixed-id"}`))
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409, got %d: %s", w.Code, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "id_taken" {
+		t.Fatalf("want code id_taken, got %q: %s", got["code"], w.Body)
+	}
+}
+
+func TestErrorBodyEchoesRequestID(t *testing.T) {
+	h := srv(t)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/runs/nope", nil)
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", w.Code, w.Body)
+	}
+	headerID := w.Header().Get("X-Request-Id")
+	if headerID == "" {
+		t.Fatal("no X-Request-Id response header")
+	}
+	got := errBody(t, w)
+	if got["request_id"] != headerID {
+		t.Fatalf("want error body request_id %q to match response header, got %q", headerID, got["request_id"])
+	}
+}
+
 func TestUpdateUnknownFieldIsRejected(t *testing.T) {
 	h := srv(t)
 	w := post(t, h, `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)

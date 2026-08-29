@@ -219,7 +219,7 @@ func newRequestID() string {
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
 	if _, err := s.store.List(r.Context(), store.Query{Limit: 1}); err != nil {
 		s.metrics.StoreError("readyz")
-		writeErr(w, http.StatusServiceUnavailable, fmt.Errorf("store not ready: %w", err))
+		writeErr(w, http.StatusServiceUnavailable, "unavailable", fmt.Errorf("store not ready: %w", err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -243,7 +243,7 @@ func (s *Server) requireAuth(write bool, next http.HandlerFunc) http.HandlerFunc
 		token, ok := bearerToken(r)
 		if !ok || !s.auth.allows(write, token) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="run-ledger"`)
-			writeErr(w, http.StatusUnauthorized, errors.New("missing or invalid bearer token"))
+			writeErr(w, http.StatusUnauthorized, "unauthenticated", errors.New("missing or invalid bearer token"))
 			return
 		}
 		next(w, r)
@@ -267,7 +267,7 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	// would store a run that claims to describe an experiment it does not.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&run); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	if run.StartedAt.IsZero() {
@@ -285,11 +285,14 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.Record(r.Context(), run); err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
+			// Record's only conflict is a run id already taken by different
+			// content -- unlike Update, there is no identity/transition
+			// distinction to make here.
 			s.metrics.StoreError("conflict")
-			writeErr(w, http.StatusConflict, err)
+			writeErr(w, http.StatusConflict, "id_taken", err)
 		default:
 			s.metrics.StoreError("invalid")
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "bad_request", err)
 		}
 		return
 	}
@@ -334,7 +337,7 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	p := store.Patch{
@@ -350,13 +353,29 @@ func (s *Server) update(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			s.metrics.StoreError("not_found")
-			writeErr(w, http.StatusNotFound, err)
-		case errors.Is(err, store.ErrConflict):
+			writeErr(w, http.StatusNotFound, "not_found", err)
+		// The more specific sentinels are checked before the plain
+		// ErrConflict they wrap, so a caller gets identity_conflict or
+		// illegal_transition instead of a code that only says "409" and
+		// makes the client guess why.
+		case errors.Is(err, store.ErrIdentityConflict):
 			s.metrics.StoreError("conflict")
-			writeErr(w, http.StatusConflict, err)
+			writeErr(w, http.StatusConflict, "identity_conflict", err)
+		case errors.Is(err, store.ErrIllegalTransition):
+			s.metrics.StoreError("conflict")
+			writeErr(w, http.StatusConflict, "illegal_transition", err)
+		case errors.Is(err, store.ErrUnknownStatus):
+			s.metrics.StoreError("invalid")
+			writeErr(w, http.StatusBadRequest, "unknown_status", err)
+		case errors.Is(err, store.ErrConflict):
+			// A future ErrConflict-family error api.go hasn't been taught a
+			// specific code for -- still a real conflict, just an
+			// unclassified one.
+			s.metrics.StoreError("conflict")
+			writeErr(w, http.StatusConflict, "conflict", err)
 		default:
 			s.metrics.StoreError("invalid")
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "bad_request", err)
 		}
 		return
 	}
@@ -371,12 +390,12 @@ func (s *Server) get(w http.ResponseWriter, r *http.Request) {
 	run, err := s.store.Get(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, err)
+		writeErr(w, http.StatusNotFound, "not_found", err)
 		return
 	}
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
@@ -394,27 +413,27 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	for key := range q {
 		if !listQueryParams[key] {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown query parameter %q", key))
+			writeErr(w, http.StatusBadRequest, "bad_request", fmt.Errorf("unknown query parameter %q", key))
 			return
 		}
 	}
 	limit, err := parseLimit(q.Get("limit"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, http.StatusBadRequest, "bad_request", err)
 		return
 	}
 	var after *store.Cursor
 	if raw := q.Get("cursor"); raw != "" {
 		c, err := decodeCursor(raw)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
+			writeErr(w, http.StatusBadRequest, "invalid_cursor", err)
 			return
 		}
 		after = &c
 	}
 	status := lineage.Status(q.Get("status"))
 	if status != "" && !lineage.ValidStatus(status) {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("unknown status %q", status))
+		writeErr(w, http.StatusBadRequest, "unknown_status", fmt.Errorf("unknown status %q", status))
 		return
 	}
 	page, err := s.store.List(r.Context(), store.Query{
@@ -428,7 +447,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	resp := map[string]any{"runs": page.Runs, "count": len(page.Runs), "limit": limit}
@@ -477,19 +496,19 @@ func decodeCursor(s string) (store.Cursor, error) {
 func (s *Server) compare(w http.ResponseWriter, r *http.Request) {
 	idA, idB := r.URL.Query().Get("a"), r.URL.Query().Get("b")
 	if idA == "" || idB == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("both a and b are required"))
+		writeErr(w, http.StatusBadRequest, "bad_request", errors.New("both a and b are required"))
 		return
 	}
 	a, err := s.store.Get(r.Context(), idA)
 	if err != nil {
 		s.metrics.StoreError(errKind(err))
-		writeErr(w, statusFor(err), fmt.Errorf("run a: %w", err))
+		writeErr(w, statusFor(err), errCodeFor(err), fmt.Errorf("run a: %w", err))
 		return
 	}
 	b, err := s.store.Get(r.Context(), idB)
 	if err != nil {
 		s.metrics.StoreError(errKind(err))
-		writeErr(w, statusFor(err), fmt.Errorf("run b: %w", err))
+		writeErr(w, statusFor(err), errCodeFor(err), fmt.Errorf("run b: %w", err))
 		return
 	}
 	res := compare.Runs(a, b)
@@ -509,7 +528,7 @@ func (s *Server) spreadList(w http.ResponseWriter, r *http.Request) {
 	page, err := s.store.List(r.Context(), store.Query{Project: r.URL.Query().Get("project")})
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	var groups []spread.Group
@@ -530,12 +549,12 @@ func (s *Server) spreadOne(w http.ResponseWriter, r *http.Request) {
 	page, err := s.store.List(r.Context(), store.Query{Fingerprint: fp})
 	if err != nil {
 		s.metrics.StoreError("internal")
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, http.StatusInternalServerError, "internal", err)
 		return
 	}
 	if len(page.Runs) == 0 {
 		s.metrics.StoreError("not_found")
-		writeErr(w, http.StatusNotFound, fmt.Errorf("no run recorded with fingerprint %q", fp))
+		writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no run recorded with fingerprint %q", fp))
 		return
 	}
 	writeJSON(w, http.StatusOK, spread.One(fp, page.Runs))
@@ -574,12 +593,33 @@ func errKind(err error) string {
 	return "internal"
 }
 
+// errCodeFor is errKind's counterpart for the JSON error body's "code"
+// field. The two are computed separately (rather than one deriving the
+// other) because errKind feeds a metrics label, a space where new values are
+// cheap, while errCode is part of the API contract client code may switch
+// on.
+func errCodeFor(err error) string {
+	if errors.Is(err, store.ErrNotFound) {
+		return "not_found"
+	}
+	return "internal"
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, code int, err error) {
-	writeJSON(w, code, map[string]string{"error": err.Error()})
+// writeErr writes a JSON error body carrying a stable, machine-readable code
+// alongside the human-readable message, plus the request id -- already set
+// as the X-Request-Id response header by instrument before any handler
+// runs, so reading it back off w here is simpler and just as correct as
+// threading a second copy through the request context.
+func writeErr(w http.ResponseWriter, code int, errCode string, err error) {
+	writeJSON(w, code, map[string]string{
+		"error":      err.Error(),
+		"code":       errCode,
+		"request_id": w.Header().Get("X-Request-Id"),
+	})
 }
