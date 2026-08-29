@@ -1047,3 +1047,54 @@ func TestHealthzUnauthenticatedEvenWithTokenConfigured(t *testing.T) {
 		t.Fatalf("want 200, got %d", w.Code)
 	}
 }
+
+func TestUnmatchedPathIs404WithJSONEnvelope(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/nope", nil))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d: %s", w.Code, w.Body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("want a JSON error body, got Content-Type %q: %s", ct, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "not_found" {
+		t.Fatalf("want code not_found, got %q: %s", got["code"], w.Body)
+	}
+	if got["request_id"] == "" {
+		t.Fatalf("want a request_id in the error body: %s", w.Body)
+	}
+}
+
+func TestDisallowedMethodIs405WithAllowHeader(t *testing.T) {
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/runs", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405, got %d: %s", w.Code, w.Body)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("want a JSON error body, got Content-Type %q: %s", ct, w.Body)
+	}
+	got := errBody(t, w)
+	if got["code"] != "method_not_allowed" {
+		t.Fatalf("want code method_not_allowed, got %q: %s", got["code"], w.Body)
+	}
+	allow := w.Header().Get("Allow")
+	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "POST") {
+		t.Fatalf("want Allow to list GET and POST for /runs, got %q", allow)
+	}
+}
+
+func TestDisallowedMethodOnPathParamRouteIs405(t *testing.T) {
+	// /runs/{id} only supports GET and PATCH -- DELETE must be refused the
+	// same way, with the path-templated route resolved correctly.
+	w := httptest.NewRecorder()
+	srv(t).ServeHTTP(w, httptest.NewRequest(http.MethodDelete, "/runs/xyz", nil))
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("want 405, got %d: %s", w.Code, w.Body)
+	}
+	allow := w.Header().Get("Allow")
+	if !strings.Contains(allow, "GET") || !strings.Contains(allow, "PATCH") {
+		t.Fatalf("want Allow to list GET and PATCH for /runs/{id}, got %q", allow)
+	}
+}

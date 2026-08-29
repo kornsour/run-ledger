@@ -117,29 +117,81 @@ func New(s store.Store, log *slog.Logger, opts ...Option) *Server {
 	return srv
 }
 
+// route pairs one registered method+pattern with its handler. routes is the
+// single source of truth Handler builds the mux from; unmatched (below)
+// walks the same table to tell "no such path" apart from "wrong method for
+// this path" once the mux itself has failed to find a specific match.
+type route struct {
+	method  string
+	pattern string
+	handler http.HandlerFunc
+}
+
+func (s *Server) routes() []route {
+	return []route{
+		{http.MethodPost, "/runs", s.requireAuth(true, s.record)},
+		{http.MethodPatch, "/runs/{id}", s.requireAuth(true, s.update)},
+		{http.MethodGet, "/runs", s.requireAuth(false, s.list)},
+		{http.MethodGet, "/runs/{id}", s.requireAuth(false, s.get)},
+		{http.MethodGet, "/compare", s.requireAuth(false, s.compare)},
+		{http.MethodGet, "/fingerprints", s.requireAuth(false, s.spreadList)},
+		{http.MethodGet, "/fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne)},
+		// /healthz stays unauthenticated so a liveness probe does not need a
+		// credential.
+		{http.MethodGet, "/healthz", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ok\n"))
+		}},
+		// Ready means the store answers a call, not just that the process is
+		// up. That distinction is a no-op today -- the only backend is
+		// in-memory -- but becomes real once the store is out of process.
+		{http.MethodGet, "/readyz", s.readyz},
+		{http.MethodGet, "/metrics", s.serveMetrics},
+	}
+}
+
 // Handler returns the routed mux, wrapped in request-scoped logging,
 // duration/metrics instrumentation, and panic recovery.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /runs", s.requireAuth(true, s.record))
-	mux.HandleFunc("PATCH /runs/{id}", s.requireAuth(true, s.update))
-	mux.HandleFunc("GET /runs", s.requireAuth(false, s.list))
-	mux.HandleFunc("GET /runs/{id}", s.requireAuth(false, s.get))
-	mux.HandleFunc("GET /compare", s.requireAuth(false, s.compare))
-	mux.HandleFunc("GET /fingerprints", s.requireAuth(false, s.spreadList))
-	mux.HandleFunc("GET /fingerprints/{fingerprint}", s.requireAuth(false, s.spreadOne))
-	// /healthz stays unauthenticated so a liveness probe does not need a
-	// credential.
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
-	// Ready means the store answers a call, not just that the process is
-	// up. That distinction is a no-op today -- the only backend is
-	// in-memory -- but becomes real once the store is out of process.
-	mux.HandleFunc("GET /readyz", s.readyz)
-	mux.HandleFunc("GET /metrics", s.serveMetrics)
+	routes := s.routes()
+	for _, rt := range routes {
+		mux.HandleFunc(rt.method+" "+rt.pattern, rt.handler)
+	}
+	// http.ServeMux has no NotFoundHandler/MethodNotAllowedHandler hook, so a
+	// request that matches no method+pattern above would otherwise fall back
+	// to net/http's plain-text 404 -- breaking every client parsing the JSON
+	// error envelope every other response uses. Registering "/" (no method,
+	// so it matches anything) as the last-resort route catches that case.
+	mux.HandleFunc("/", s.unmatched(mux, routes))
 	return s.instrument(mux)
+}
+
+// unmatched runs only when mux found no method+pattern above for the
+// request. It re-asks mux, one route at a time, whether swapping in that
+// route's method would have matched this request's path -- reusing mux's own
+// pattern matching (wildcards included) instead of re-parsing path templates
+// itself. Some method matches: 405, with Allow listing them. None do: 404.
+func (s *Server) unmatched(mux *http.ServeMux, routes []route) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		seen := map[string]bool{}
+		var allowed []string
+		for _, rt := range routes {
+			probe := r.Clone(r.Context())
+			probe.Method = rt.method
+			if _, pattern := mux.Handler(probe); pattern == rt.method+" "+rt.pattern && !seen[rt.method] {
+				seen[rt.method] = true
+				allowed = append(allowed, rt.method)
+			}
+		}
+		if len(allowed) == 0 {
+			writeErr(w, http.StatusNotFound, "not_found", fmt.Errorf("no such route: %s %s", r.Method, r.URL.Path))
+			return
+		}
+		sort.Strings(allowed)
+		w.Header().Set("Allow", strings.Join(allowed, ", "))
+		writeErr(w, http.StatusMethodNotAllowed, "method_not_allowed", fmt.Errorf("method %s not allowed on %s", r.Method, r.URL.Path))
+	}
 }
 
 // instrument wraps mux with request-scoped logging, request-duration
@@ -156,9 +208,11 @@ func (s *Server) instrument(mux *http.ServeMux) http.Handler {
 
 		// The pattern mux would route this request to (e.g. "GET /runs/{id}"),
 		// resolved up front so the metrics and log line report the route
-		// rather than the raw, high-cardinality path.
+		// rather than the raw, high-cardinality path. "/" is the catch-all
+		// registered in Handler for 404/405 handling, not a real route, so it
+		// is reported the same as no match at all.
 		_, pattern := mux.Handler(r)
-		if pattern == "" {
+		if pattern == "" || pattern == "/" {
 			pattern = "unmatched"
 		}
 
