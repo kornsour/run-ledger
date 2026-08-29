@@ -55,6 +55,11 @@ paths:
       responses:
         "201":
           description: Run recorded
+          headers:
+            Location:
+              description: /runs/{run_id} of the newly recorded run.
+              schema:
+                type: string
           content:
             application/json:
               schema:

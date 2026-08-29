@@ -1085,6 +1085,23 @@ func TestDisallowedMethodIs405WithAllowHeader(t *testing.T) {
 	}
 }
 
+func TestRecordSetsLocationHeader(t *testing.T) {
+	w := post(t, srv(t), `{"project":"p","git_commit":"abc","config_hash":"cfg"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", w.Code, w.Body)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	runID, _ := got["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("no run id assigned: %s", w.Body)
+	}
+	want := "/runs/" + runID
+	if got := w.Header().Get("Location"); got != want {
+		t.Fatalf("want Location %q, got %q", want, got)
+	}
+}
+
 func TestDisallowedMethodOnPathParamRouteIs405(t *testing.T) {
 	// /runs/{id} only supports GET and PATCH -- DELETE must be refused the
 	// same way, with the path-templated route resolved correctly.

@@ -360,6 +360,9 @@ func (s *Server) record(w http.ResponseWriter, r *http.Request) {
 	}
 	s.metrics.RecordRun(run.Project, string(run.Status))
 	s.log.Info("recorded run", "run_id", run.RunID, "project", run.Project, "fingerprint", run.Fingerprint)
+	// The server assigns run_id when the caller doesn't supply one, so
+	// Location is the only way to learn it without parsing the body.
+	w.Header().Set("Location", "/runs/"+run.RunID)
 	writeJSON(w, http.StatusCreated, run)
 }
 
