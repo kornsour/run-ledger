@@ -111,7 +111,7 @@ docker compose up
 That builds the image from the `Dockerfile` and starts `runledger` on `:8080`
 with the durable DuckDB backend (`internal/store.DuckDB`), the database file
 on a persistent volume at `/data/runs.duckdb`. Published images land on
-`ghcr.io/lurking-walrus/run-ledger` on tagged releases; `make image` builds
+`ghcr.io/kornsour/run-ledger` on tagged releases; `make image` builds
 the same image locally for the host platform.
 
 Running `./bin/runledger` directly still defaults to the in-memory store --
