@@ -20,7 +20,7 @@ jobs:
     # have a non-nested Docker daemon; a container-based runner fails here with
     # "make: docker: No such file or directory", which is a structural
     # incompatibility rather than a flake.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
