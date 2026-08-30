@@ -16,7 +16,7 @@ jobs:
     # GitHub-hosted; see ci.yml's `build` job for the reasoning. This job also
     # runs a real `docker build` (multi-arch, via buildx + QEMU), so whatever
     # runs it needs a non-nested Docker daemon.
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(vars.USE_SELF_HOSTED_RUNNER == 'true' && github.event.repository.private && '["self-hosted","Linux","wsl"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
