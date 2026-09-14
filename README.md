@@ -4,6 +4,22 @@
 > compared and a difference in results can be attributed — or shown to be
 > unattributable. Go, one binary, no external dependencies to try it.
 
+[![CI](https://github.com/kornsour/run-ledger/actions/workflows/ci.yml/badge.svg)](https://github.com/kornsour/run-ledger/actions/workflows/ci.yml)
+[![Docs](https://github.com/kornsour/run-ledger/actions/workflows/pages.yml/badge.svg)](https://kornsour.github.io/run-ledger/)
+
+## What this demonstrates
+
+- A versioned Go HTTP API with contract tests, keyset pagination, lifecycle
+  validation, and Prometheus operational endpoints.
+- Interchangeable in-memory and durable DuckDB stores held to the same
+  conformance suite.
+- A Python client that records runs without breaking training when the ledger
+  is unavailable, then safely replays its local spool.
+- A distroless nonroot container and a multi-architecture GHCR release path
+  with build-provenance attestations.
+- Executable documentation: CI starts a real ledger, runs the reproducibility
+  notebook, and builds the published reference from the result.
+
 ## The problem
 
 An experiment produced a number. A week later it produces a different number.
