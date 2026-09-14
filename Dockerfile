@@ -18,7 +18,7 @@
 # (backtrace, malloc_trim, the glibc resolver) that musl does not implement
 # at all -- statically or dynamically. That is not a static-linking quirk to
 # route around; it rules Alpine out as a build image for this binary.
-FROM golang:1.26-bookworm AS build
+FROM golang:1.27-bookworm AS build
 WORKDIR /src
 
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
