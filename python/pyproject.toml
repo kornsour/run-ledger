@@ -8,18 +8,18 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=9.1.1"]
 # Only for building the docs artifacts (the executed notebook and the pdoc
 # reference). Deliberately not a runtime dependency: the client itself is
 # standard-library only, and a training container should not have to install
 # jupyter to record a run.
-docs = ["nbconvert>=7", "ipykernel>=6", "matplotlib>=3.7", "pdoc>=14"]
+docs = ["nbconvert>=7.17.1", "ipykernel>=7.3.0", "matplotlib>=3.10.9", "pdoc>=16.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/kornsour/run-ledger"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
