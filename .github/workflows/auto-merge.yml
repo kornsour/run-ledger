@@ -1,0 +1,50 @@
+name: Auto-merge
+
+# Enables GitHub's native auto-merge (squash) on every non-draft, same-repo PR,
+# so it merges itself once the required checks on main go green. Auto-merge is a
+# request, not a merge: a red check holds the PR open. The branch is deleted on
+# merge by the repo's delete_branch_on_merge setting.
+#
+# Dependabot PRs are left to dependabot-auto-merge.yml: they run as
+# dependabot[bot], which can only read Dependabot secrets, not this one.
+#
+# Fork PRs are never auto-merged. This repo is public, so a fork PR is code
+# from anyone; that condition is a security boundary, not a filter.
+#
+# As in dependabot-auto-merge.yml, the merge is enabled with AUTOMERGE_TOKEN and
+# never GITHUB_TOKEN: a merge caused by GITHUB_TOKEN lands on main without
+# starting any push-triggered workflow (CI on main, Pages, the image publish).
+# The job fails closed if the secret is missing. It is the same fine-grained
+# PAT, stored this time as an *Actions* secret:
+#   gh secret set AUTOMERGE_TOKEN -R kornsour/run-ledger
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+# GITHUB_TOKEN is unused; the merge request goes out under AUTOMERGE_TOKEN.
+permissions: {}
+
+jobs:
+  automerge:
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require AUTOMERGE_TOKEN
+        env:
+          HAVE_TOKEN: ${{ secrets.AUTOMERGE_TOKEN != '' }}
+        run: |
+          if [ "$HAVE_TOKEN" != "true" ]; then
+            echo "::error title=AUTOMERGE_TOKEN is not set::Store the auto-merge PAT as an Actions secret: gh secret set AUTOMERGE_TOKEN -R ${GITHUB_REPOSITORY}"
+            exit 1
+          fi
+
+      - name: Enable auto-merge
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.AUTOMERGE_TOKEN }}
