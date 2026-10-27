@@ -19,7 +19,7 @@ docs = ["nbconvert>=7.17.2", "ipykernel>=7.3.0", "matplotlib>=3.10.9", "pdoc>=16
 Homepage = "https://github.com/kornsour/run-ledger"
 
 [build-system]
-requires = ["setuptools>=84.0.0"]
+requires = ["setuptools>=84.2.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
