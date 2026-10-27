@@ -13,7 +13,7 @@ dev = ["pytest>=9.1.1"]
 # reference). Deliberately not a runtime dependency: the client itself is
 # standard-library only, and a training container should not have to install
 # jupyter to record a run.
-docs = ["nbconvert>=7.17.1", "ipykernel>=7.3.0", "matplotlib>=3.10.9", "pdoc>=16.0.0"]
+docs = ["nbconvert>=7.17.2", "ipykernel>=7.3.0", "matplotlib>=3.10.9", "pdoc>=16.0.0"]
 
 [project.urls]
 Homepage = "https://github.com/kornsour/run-ledger"
