@@ -137,7 +137,7 @@ jupyter notebook python/examples/reproducibility.ipynb
 ```
 
 Or read it already executed, without installing anything:
-**https://kornsour.github.io/run-ledger/reproducibility.html**
+**https://lurking-walrus.github.io/run-ledger/reproducibility.html**
 
 It is committed with outputs stripped and executed on every deploy, so the
 published version always reflects a run that actually happened.
@@ -386,7 +386,7 @@ produce that string instead of typing `"v1"` by hand.
 ## Reference
 
 Generated from the source by `pdoc`:
-**https://kornsour.github.io/run-ledger/python/**
+**https://lurking-walrus.github.io/run-ledger/python/**
 
 ## Test
 

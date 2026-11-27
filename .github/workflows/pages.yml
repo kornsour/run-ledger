@@ -1,6 +1,6 @@
 name: Pages
 
-# Publishes https://kornsour.github.io/run-ledger/.
+# Publishes https://lurking-walrus.github.io/run-ledger/.
 #
 # The site is built here rather than served straight from docs/ because half
 # of it is generated: the API reference renders docs/openapi.yaml, the
